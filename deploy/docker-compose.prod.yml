@@ -1,0 +1,26 @@
+# Production override: docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --profile full up -d --build
+services:
+  postgres:
+    ports: !reset []
+  redis:
+    ports: !reset []
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+  web:
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: production
+      TRUST_PROXY: "true"
+  worker:
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      NODE_ENV: production
+
+networks:
+  # No gateway: database and Redis are unreachable from outside, and containers can
+  # only reach the internet through the firewalled `egress` bridge.
+  internal:
+    internal: true

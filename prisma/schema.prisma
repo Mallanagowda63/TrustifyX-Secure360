@@ -1,0 +1,660 @@
+// TrustifyX Secure360 - data model
+// Every tenant-owned table carries `orgId` so that all queries can be scoped
+// server-side to the caller's organization.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── Identity & tenancy ─────────────────────────────
+
+enum OrgRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String
+  passwordHash    String
+  isPlatformAdmin Boolean   @default(false)
+  failedLogins    Int       @default(0)
+  lockedUntil     DateTime?
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  memberships     Membership[]
+  sessions        Session[]
+  notificationPrefs NotificationPreference[]
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships   Membership[]
+  invitations   Invitation[]
+  websites      Website[]
+  auditLogs     AuditLog[]
+  findings      Finding[]
+  incidents     Incident[]
+  alerts        Alert[]
+  integrations  Integration[]
+  reports       Report[]
+  aiInteractions AiInteraction[]
+  subscriptions  Subscription[]
+  payments       Payment[]
+  invoices       Invoice[]
+  notificationPrefs NotificationPreference[]
+}
+
+model Membership {
+  id        String       @id @default(cuid())
+  userId    String
+  orgId     String
+  role      OrgRole      @default(MEMBER)
+  createdAt DateTime     @default(now())
+
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, orgId])
+  @@index([orgId])
+}
+
+model Session {
+  id          String   @id @default(cuid())
+  // SHA-256 of the opaque session token; the raw token only lives in the cookie.
+  tokenHash   String   @unique
+  csrfToken   String
+  userId      String
+  activeOrgId String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+  lastSeenAt  DateTime @default(now())
+  expiresAt   DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Invitation {
+  id          String    @id @default(cuid())
+  orgId       String
+  email       String
+  role        OrgRole   @default(MEMBER)
+  tokenHash   String    @unique
+  invitedById String
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  orgId      String?
+  userId     String?
+  action     String
+  targetType String?
+  targetId   String?
+  ip         String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  org Organization? @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([userId, createdAt])
+}
+
+// ───────────────────────────── Websites & monitoring ─────────────────────────────
+
+enum PausedReason {
+  USER
+  SUBSCRIPTION_INACTIVE
+  PLAN_LIMIT
+}
+
+enum WebsiteStatus {
+  PENDING_VERIFICATION
+  CONNECTED
+  MONITORING_PAUSED
+  VERIFICATION_FAILED
+}
+
+enum VerificationMethod {
+  DNS_TXT
+  HTTP_FILE
+}
+
+enum SiteState {
+  UNKNOWN
+  UP
+  DOWN
+}
+
+model Website {
+  id                     String              @id @default(cuid())
+  orgId                  String
+  displayName            String
+  url                    String // normalized https://hostname/
+  hostname               String
+  status                 WebsiteStatus       @default(PENDING_VERIFICATION)
+  verificationToken      String
+  verificationMethod     VerificationMethod?
+  verifiedAt             DateTime?
+  lastVerificationAt     DateTime?
+  lastVerificationError  String?
+  authorizationConfirmedAt DateTime?
+  authorizedById         String?
+  // Ownership is re-checked daily; monitoring stops after repeated failures.
+  lastReverifiedAt       DateTime?
+  reverifyFailures       Int                 @default(0)
+  // Why monitoring is paused: by the customer, or automatically by billing (resumes automatically).
+  pausedReason           PausedReason?
+
+  availabilityIntervalSec Int                @default(300)
+  configIntervalSec       Int                @default(21600)
+  lastAvailabilityCheckAt DateTime?
+  lastConfigCheckAt       DateTime?
+  lastManualScanAt        DateTime?
+
+  state                  SiteState           @default(UNKNOWN)
+  consecutiveFailures    Int                 @default(0)
+  lastResponseTimeMs     Int?
+  lastStatusCode         Int?
+  tlsValidTo             DateTime?
+
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  org             Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  checks          AvailabilityCheck[]
+  snapshots       ConfigSnapshot[]
+  configChanges   ConfigChange[]
+  findings        Finding[]
+  incidents       Incident[]
+
+  @@unique([orgId, hostname])
+  @@index([status])
+  @@index([orgId])
+}
+
+model AvailabilityCheck {
+  id             String   @id @default(cuid())
+  websiteId      String
+  orgId          String
+  checkedAt      DateTime @default(now())
+  success        Boolean
+  statusCode     Int?
+  responseTimeMs Int?
+  redirectCount  Int      @default(0)
+  finalUrl       String?
+  attempts       Int      @default(1)
+  error          String?
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([websiteId, checkedAt])
+  @@index([orgId, checkedAt])
+}
+
+model ConfigSnapshot {
+  id        String   @id @default(cuid())
+  websiteId String
+  orgId     String
+  checkedAt DateTime @default(now())
+  tls       Json?
+  headers   Json?
+  https     Json?
+  dns       Json?
+  errors    Json?
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([websiteId, checkedAt])
+}
+
+model ConfigChange {
+  id            String   @id @default(cuid())
+  websiteId     String
+  orgId         String
+  detectedAt    DateTime @default(now())
+  category      String // tls | headers | https | dns
+  field         String
+  previousValue String?
+  newValue      String?
+
+  website Website @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([websiteId, detectedAt])
+  @@index([orgId, detectedAt])
+}
+
+// ───────────────────────────── Findings ─────────────────────────────
+
+enum Severity {
+  INFO
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FindingStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  FALSE_POSITIVE
+}
+
+model Finding {
+  id             String        @id @default(cuid())
+  orgId          String
+  websiteId      String
+  ruleId         String
+  category       String
+  title          String
+  severity       Severity
+  status         FindingStatus @default(OPEN)
+  evidence       Json
+  description    String
+  remediation    String
+  firstSeenAt    DateTime      @default(now())
+  lastSeenAt     DateTime      @default(now())
+  resolvedAt     DateTime?
+  statusNote     String?
+  statusChangedById String?
+  statusChangedAt   DateTime?
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([websiteId, ruleId])
+  @@index([orgId, status])
+}
+
+// ───────────────────────────── Incidents & alerts ─────────────────────────────
+
+enum IncidentType {
+  DOWNTIME
+  TLS_EXPIRY
+  TLS_INVALID
+}
+
+model Incident {
+  id         String       @id @default(cuid())
+  orgId      String
+  websiteId  String
+  type       IncidentType
+  startedAt  DateTime     @default(now())
+  resolvedAt DateTime?
+  details    Json?
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, startedAt])
+  @@index([websiteId, type, resolvedAt])
+}
+
+enum AlertType {
+  DOWNTIME
+  RECOVERY
+  TLS_EXPIRY
+  FINDING_NEW
+  FINDING_RESOLVED
+  REPORT
+  BILLING
+}
+
+enum AlertStatus {
+  PENDING
+  SENT
+  FAILED
+  SKIPPED
+}
+
+model Alert {
+  id        String      @id @default(cuid())
+  orgId     String
+  websiteId String?
+  type      AlertType
+  // Stable key for one logical notification, e.g. "down:<incidentId>".
+  dedupeKey String
+  recipient String
+  subject   String
+  status    AlertStatus
+  error     String?
+  createdAt DateTime    @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([dedupeKey, recipient])
+  @@index([orgId, createdAt])
+}
+
+model NotificationPreference {
+  id                 String  @id @default(cuid())
+  orgId              String
+  userId             String
+  emailDowntime      Boolean @default(true)
+  emailTlsExpiry     Boolean @default(true)
+  emailFindings      Boolean @default(true)
+  findingMinSeverity Severity @default(MEDIUM)
+  emailWeeklyReport  Boolean @default(false)
+  emailMonthlyReport Boolean @default(true)
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, userId])
+}
+
+// ───────────────────────────── Phase 2: integrations, reports, AI ─────────────────────────────
+
+enum IntegrationType {
+  CLOUDFLARE_WAF
+  WAZUH
+  GITHUB
+  OWASP_ZAP
+}
+
+enum IntegrationStatus {
+  NOT_CONNECTED
+  CONNECTED
+  ERROR
+}
+
+model Integration {
+  id                   String            @id @default(cuid())
+  orgId                String
+  type                 IntegrationType
+  status               IntegrationStatus @default(NOT_CONNECTED)
+  // AES-256-GCM ciphertext (see src/server/security/crypto.ts). Never returned by APIs.
+  encryptedCredentials String?
+  config               Json?
+  lastSyncAt           DateTime?
+  lastError            String?
+  createdAt            DateTime          @default(now())
+  updatedAt            DateTime          @updatedAt
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, type])
+}
+
+enum ReportPeriod {
+  WEEKLY
+  MONTHLY
+}
+
+model Report {
+  id          String       @id @default(cuid())
+  orgId       String
+  period      ReportPeriod
+  periodStart DateTime
+  periodEnd   DateTime
+  summary     Json
+  aiSummary   String?
+  createdAt   DateTime     @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, period, periodStart])
+  @@index([orgId, createdAt])
+}
+
+model AiInteraction {
+  id        String   @id @default(cuid())
+  orgId     String
+  userId    String?
+  kind      String // explain_finding | prioritize | monthly_summary | explain_change | chat
+  question  String?
+  response  String
+  provider  String
+  model     String
+  createdAt DateTime @default(now())
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+}
+
+// ───────────────────────────── Billing ─────────────────────────────
+// Prices are integers in paise. Entitlements are derived from Subscription rows whose state
+// is only ever set from provider-verified data (Razorpay API / signed webhooks) or an
+// explicit, audited complimentary grant. See src/server/billing/.
+
+enum BillingCycle {
+  MONTHLY
+  ANNUAL
+}
+
+enum BillingMode {
+  RECURRING
+  PREPAID
+  COMPLIMENTARY
+}
+
+enum SubscriptionStatus {
+  PENDING_PAYMENT
+  ACTIVE
+  PAST_DUE
+  HALTED
+  CANCELLED
+  COMPLETED
+  EXPIRED
+  ABANDONED
+}
+
+enum PaymentStatus {
+  CREATED
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum WebhookEventStatus {
+  RECEIVED
+  PROCESSED
+  FAILED
+  IGNORED
+}
+
+enum InvoiceStatus {
+  ISSUED
+  VOID
+}
+
+model PricingPlan {
+  id                      String   @id @default(cuid())
+  code                    String   @unique
+  name                    String
+  tagline                 String
+  description             String
+  monthlyPricePaise       Int
+  /// Null = annual billing not offered for this plan.
+  annualPricePaise        Int?
+  currency                String   @default("INR")
+  maxWebsites             Int
+  maxMembers              Int
+  availabilityIntervalSec Int      @default(300)
+  aiAssistant             Boolean  @default(false)
+  scheduledReports        Boolean  @default(false)
+  auditLogs               Boolean  @default(false)
+  features                Json
+  highlight               Boolean  @default(false)
+  sortOrder               Int      @default(0)
+  active                  Boolean  @default(true)
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  providerPlans ProviderPlan[]
+  subscriptions Subscription[]
+}
+
+/// Razorpay plans are immutable, so each (plan, cycle, amount) maps to its own provider plan.
+model ProviderPlan {
+  id             String       @id @default(cuid())
+  planId         String
+  cycle          BillingCycle
+  amountPaise    Int
+  razorpayPlanId String       @unique
+  createdAt      DateTime     @default(now())
+
+  plan PricingPlan @relation(fields: [planId], references: [id])
+
+  @@unique([planId, cycle, amountPaise])
+}
+
+model Subscription {
+  id                     String             @id @default(cuid())
+  orgId                  String
+  planId                 String
+  cycle                  BillingCycle
+  mode                   BillingMode
+  status                 SubscriptionStatus @default(PENDING_PAYMENT)
+  /// Amount charged per cycle (incl. tax), fixed by the server at checkout.
+  amountPaise            Int
+  currency               String             @default("INR")
+  razorpaySubscriptionId String?            @unique
+  razorpayPlanId         String?
+  /// Prepaid mode: the order awaiting payment for the next period.
+  razorpayOrderId        String?            @unique
+  providerStatus         String?
+  paidCount              Int                @default(0)
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  graceUntil             DateTime?
+  cancelAtPeriodEnd      Boolean            @default(false)
+  cancelledAt            DateTime?
+  endedAt                DateTime?
+  /// Plan change: the subscription this one replaces once it becomes active.
+  replacesSubscriptionId String?
+  scheduledStartAt       DateTime?
+  grantReason            String?
+  createdById            String?
+  lastSyncedAt           DateTime?
+  createdAt              DateTime           @default(now())
+  updatedAt              DateTime           @updatedAt
+
+  org      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  plan     PricingPlan  @relation(fields: [planId], references: [id])
+  payments Payment[]
+  invoices Invoice[]
+
+  @@index([orgId, status])
+  @@index([status, currentPeriodEnd])
+}
+
+model Payment {
+  id                String        @id @default(cuid())
+  orgId             String
+  subscriptionId    String?
+  razorpayPaymentId String        @unique
+  razorpayOrderId   String?
+  razorpayInvoiceId String?
+  amountPaise       Int
+  currency          String        @default("INR")
+  status            PaymentStatus
+  method            String?
+  errorCode         String?
+  errorDescription  String?
+  refundedPaise     Int           @default(0)
+  capturedAt        DateTime?
+  failedAt          DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+  invoice      Invoice?
+
+  @@index([orgId, createdAt])
+  @@index([status, createdAt])
+}
+
+model Invoice {
+  id             String        @id @default(cuid())
+  orgId          String
+  subscriptionId String
+  paymentId      String        @unique
+  number         String        @unique
+  subtotalPaise  Int
+  taxPaise       Int
+  totalPaise     Int
+  taxRateBp      Int
+  currency       String        @default("INR")
+  periodStart    DateTime?
+  periodEnd      DateTime?
+  billedTo       Json
+  status         InvoiceStatus @default(ISSUED)
+  issuedAt       DateTime      @default(now())
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+  payment      Payment      @relation(fields: [paymentId], references: [id])
+
+  @@index([orgId, issuedAt])
+}
+
+/// Signature-verified provider events only. Forged requests are never stored here, so they
+/// cannot claim a real event id. The unique eventId makes retries and duplicates idempotent.
+model PaymentWebhookEvent {
+  id          String             @id @default(cuid())
+  provider    String             @default("razorpay")
+  eventId     String             @unique
+  eventType   String
+  payload     Json
+  status      WebhookEventStatus @default(RECEIVED)
+  attempts    Int                @default(0)
+  error       String?
+  receivedAt  DateTime           @default(now())
+  processedAt DateTime?
+
+  @@index([status, receivedAt])
+}
+
+model BillingAuditLog {
+  id             String   @id @default(cuid())
+  orgId          String?
+  actorType      String // USER | ADMIN | WEBHOOK | SYSTEM
+  actorUserId    String?
+  action         String
+  subscriptionId String?
+  paymentId      String?
+  details        Json?
+  createdAt      DateTime @default(now())
+
+  @@index([orgId, createdAt])
+  @@index([action, createdAt])
+}
+
+model BillingCounter {
+  key   String @id
+  value Int    @default(0)
+}

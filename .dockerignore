@@ -1,0 +1,9 @@
+node_modules
+.next
+dist-worker
+.git
+.env
+.env.*
+!.env.example
+coverage
+storage

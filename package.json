@@ -1,0 +1,62 @@
+{
+  "name": "trustifyx-secure360",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TrustifyX Secure360 - AI-assisted cybersecurity monitoring platform",
+  "scripts": {
+    "dev": "next dev",
+    "dev:worker": "tsx watch src/worker/index.ts",
+    "build": "prisma generate && next build",
+    "build:worker": "esbuild src/worker/index.ts --bundle --platform=node --target=node22 --packages=external --tsconfig=tsconfig.json --outfile=dist-worker/index.js",
+    "start": "next start",
+    "start:worker": "node dist-worker/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run tests/unit",
+    "test:integration": "vitest run tests/integration",
+    "db:migrate": "prisma migrate dev",
+    "db:deploy": "prisma migrate deploy",
+    "db:studio": "prisma studio",
+    "admin:promote": "tsx --env-file=.env scripts/promote-admin.ts",
+    "billing:grant": "tsx --env-file=.env --tsconfig tsconfig.json scripts/grant-complimentary.ts"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^22.20.5",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pdfkit": "^0.17.7",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "esbuild": "^0.28.2",
+    "postcss": "^8.5.31",
+    "prisma": "^6.19.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@node-rs/argon2": "^2.2.2",
+    "@prisma/client": "^6.19.3",
+    "bullmq": "^5.81.5",
+    "ioredis": "^5.11.1",
+    "ipaddr.js": "^2.5.0",
+    "next": "^16.4.3",
+    "nodemailer": "^10.2.1",
+    "pdfkit": "^0.20.2",
+    "razorpay": "^2.9.8",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "recharts": "^3.10.1",
+    "server-only": "^0.0.1",
+    "tldts": "^7.4.19",
+    "zod": "^4.6.7"
+  },
+  "overrides": {
+    "deepmerge-ts": "^8.0.0"
+  }
+}

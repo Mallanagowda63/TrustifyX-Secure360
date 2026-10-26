@@ -1,0 +1,197 @@
+@import "tailwindcss";
+
+@theme {
+  --color-navy-950: #060d1f;
+  --color-navy-900: #0b1530;
+  --color-navy-850: #0f1b33;
+  --color-navy-800: #14223f;
+  --color-navy-700: #1d2f55;
+  --color-navy-600: #2a3f6b;
+  --color-ink: #e6edf8;
+  --color-ink-muted: #9fb0cc;
+  --color-ink-faint: #6b7fa3;
+  --color-brand: #3987e5;
+  --color-brand-strong: #2a78d6;
+  --color-good: #0ca30c;
+  --color-warning: #fab219;
+  --color-serious: #ec835a;
+  --color-critical: #d03b3b;
+  --font-sans: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  --font-display: var(--font-jakarta), var(--font-sans);
+  /* Marketing palette: royal blue + teal on white / light neutrals */
+  --color-royal-50: #eff6ff;
+  --color-royal-100: #dbeafe;
+  --color-royal-200: #bfdbfe;
+  --color-royal-400: #60a5fa;
+  --color-royal-500: #3b82f6;
+  --color-royal-600: #2563eb;
+  --color-royal-700: #1d4ed8;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-navy-950);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* In a layer so Tailwind utilities (e.g. w-auto, py-1) can override these defaults. */
+@layer components {
+.card {
+  background: var(--color-navy-850);
+  border: 1px solid var(--color-navy-700);
+  border-radius: 0.75rem;
+}
+
+.input {
+  width: 100%;
+  background: var(--color-navy-900);
+  border: 1px solid var(--color-navy-600);
+  border-radius: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  color: var(--color-ink);
+  outline: none;
+}
+.input:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--color-brand) 35%, transparent);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  transition: background 0.15s;
+  cursor: pointer;
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--color-brand-strong);
+  color: white;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-brand);
+}
+.btn-ghost {
+  background: transparent;
+  border: 1px solid var(--color-navy-600);
+  color: var(--color-ink);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--color-navy-800);
+}
+.btn-danger {
+  background: transparent;
+  border: 1px solid color-mix(in oklab, var(--color-critical) 60%, transparent);
+  color: #f3a3a3;
+}
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in oklab, var(--color-critical) 18%, transparent);
+}
+
+table.data {
+  width: 100%;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+}
+table.data th {
+  text-align: left;
+  font-weight: 600;
+  color: var(--color-ink-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-navy-700);
+}
+table.data td {
+  padding: 0.65rem 0.75rem;
+  border-bottom: 1px solid var(--color-navy-800);
+  vertical-align: top;
+}
+table.data tr:hover td {
+  background: color-mix(in oklab, var(--color-navy-800) 60%, transparent);
+}
+}
+
+code, .mono {
+  font-family: var(--font-mono);
+}
+
+/* ─── Public marketing site (light theme) ─── */
+@layer components {
+  .marketing {
+    color-scheme: light;
+    background: #ffffff;
+    color: #0f172a;
+    font-family: var(--font-inter), var(--font-sans);
+  }
+  .mk-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.75rem;
+    padding: 0.7rem 1.25rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    transition: transform 0.15s, box-shadow 0.15s, background 0.15s, color 0.15s;
+  }
+  .mk-btn:focus-visible {
+    outline: 3px solid color-mix(in oklab, var(--color-royal-500) 55%, transparent);
+    outline-offset: 2px;
+  }
+  .mk-btn-primary {
+    background: linear-gradient(135deg, var(--color-royal-600), #0d9488);
+    color: #fff;
+    box-shadow: 0 8px 24px -10px rgb(37 99 235 / 0.6);
+  }
+  .mk-btn-primary:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 12px 28px -10px rgb(37 99 235 / 0.7);
+  }
+  .mk-btn-outline {
+    border: 1.5px solid var(--color-royal-600);
+    color: var(--color-royal-700);
+    background: #fff;
+  }
+  .mk-btn-outline:hover {
+    background: #eff6ff;
+  }
+  .mk-btn-ghost {
+    color: #0f172a;
+  }
+  .mk-btn-ghost:hover {
+    background: #f1f5f9;
+  }
+  .mk-btn-light {
+    background: #fff;
+    color: var(--color-navy-950);
+  }
+  .mk-btn-light:hover {
+    transform: translateY(-1px);
+  }
+  .mk-section {
+    scroll-margin-top: 5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mk-btn,
+  .mk-btn:hover {
+    transition: none;
+    transform: none;
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+.next/
+dist-worker/
+coverage/
+.env
+.env.local
+.env.*.local
+*.log
+next-env.d.ts
+*.tsbuildinfo
+storage/
+backups/
+AGENTS.md

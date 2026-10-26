@@ -1,0 +1,93 @@
+# Local development: `docker compose up -d postgres redis` then `npm run dev` + `npm run dev:worker`.
+# Full stack (production-like): `docker compose --profile full up -d --build`.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-trustifyx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trustifyx_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-secure360}
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-trustifyx}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "127.0.0.1:${REDIS_HOST_PORT:-6379}:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [internal]
+
+  migrate:
+    profiles: ["full"]
+    build: { context: ., target: worker }
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trustifyx}:${POSTGRES_PASSWORD:-trustifyx_dev_password}@postgres:5432/${POSTGRES_DB:-secure360}
+    command: ["npx", "prisma", "migrate", "deploy"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+    networks: [internal]
+
+  web:
+    profiles: ["full"]
+    build: { context: ., target: web }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trustifyx}:${POSTGRES_PASSWORD:-trustifyx_dev_password}@postgres:5432/${POSTGRES_DB:-secure360}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    ports:
+      - "127.0.0.1:3000:3000"
+    # Web needs outbound access for SMTP and the AI provider; it never fetches customer URLs.
+    networks: [internal, egress]
+
+  worker:
+    profiles: ["full"]
+    build: { context: ., target: worker }
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-trustifyx}:${POSTGRES_PASSWORD:-trustifyx_dev_password}@postgres:5432/${POSTGRES_DB:-secure360}
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      migrate: { condition: service_completed_successfully }
+    # The worker makes outbound requests to customer websites. It sits on its own
+    # bridge (`egress`) so host firewall rules can restrict it (deploy/egress-firewall.sh).
+    networks: [internal, egress]
+
+volumes:
+  pgdata:
+  redisdata:
+
+networks:
+  internal:
+    driver: bridge
+  egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-tx-egress
