@@ -1,4 +1,4 @@
-import { env } from "../env";
+import { marketingUrl } from "../sites";
 import { renderEmail } from "../alerts/mailer";
 import { dispatchAlert } from "../alerts/notify";
 
@@ -12,7 +12,7 @@ export async function notifyBilling(orgId: string, dedupeKey: string, subject: s
       dedupeKey: `billing:${orgId}:${dedupeKey}`,
       subject: `[Secure360] ${subject}`,
       text: lines.join("\n\n"),
-      html: renderEmail(subject, lines, { label: "Open billing", url: `${env().APP_URL.replace(/\/$/, "")}/billing` }),
+      html: renderEmail(subject, lines, { label: "Open billing", url: marketingUrl("/account/billing") }),
     });
   } catch (err) {
     console.error("[billing] notification failed", (err as Error).message);

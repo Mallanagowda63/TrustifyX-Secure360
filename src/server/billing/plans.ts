@@ -10,6 +10,7 @@ import { env } from "../env";
 export const DEFAULT_PLANS = [
   {
     code: "STARTER",
+    kind: "BASE",
     name: "Starter",
     tagline: "For individuals and small websites",
     description: "Essential external security monitoring for one website.",
@@ -34,6 +35,7 @@ export const DEFAULT_PLANS = [
   },
   {
     code: "GROWTH",
+    kind: "BASE",
     name: "Growth",
     tagline: "For growing businesses",
     description: "Monitoring for several websites with AI explanations and team access.",
@@ -57,6 +59,7 @@ export const DEFAULT_PLANS = [
   },
   {
     code: "BUSINESS",
+    kind: "BASE",
     name: "Business",
     tagline: "For agencies and growing companies",
     description: "Multi-website monitoring with team permissions and organization audit logs.",
@@ -78,7 +81,32 @@ export const DEFAULT_PLANS = [
       "Business-hours email support (per published support policy)",
     ],
   },
+  {
+    // Add-on on top of an active base plan. The price is a business proposal, editable in the admin console.
+    code: "PROTECT",
+    kind: "ADDON",
+    name: "Secure360 Protect",
+    tagline: "Website protection add-on",
+    description: "TrustifyX-managed Cloudflare protection settings, firewall rules and security-event dashboards for your verified websites.",
+    monthlyPricePaise: 499_900,
+    maxWebsites: 0,
+    maxMembers: 0,
+    aiAssistant: false,
+    scheduledReports: false,
+    auditLogs: false,
+    highlight: false,
+    sortOrder: 10,
+    features: [
+      "Connect your own Cloudflare account (Cloudflare charges, if any, are billed by Cloudflare)",
+      "Review-then-apply protection settings and TrustifyX-managed firewall rules",
+      "Real Cloudflare security events and trends",
+      "Change history for every protection change",
+      "Requires an active Starter, Growth or Business plan",
+    ],
+  },
 ] as const;
+
+export const ADDON_PROTECT = "PROTECT";
 
 export async function seedPlans() {
   for (const p of DEFAULT_PLANS) {
@@ -100,9 +128,14 @@ export function ensurePlans(): Promise<void> {
   return seeded;
 }
 
-export async function listPlans(includeInactive = false) {
+/** Base plans (Starter/Growth/Business) by default; pass kind "ADDON" for add-ons or "ALL". */
+export async function listPlans(includeInactive = false, kind: "BASE" | "ADDON" | "ALL" = "BASE") {
   await ensurePlans();
-  const find = () => prisma.pricingPlan.findMany({ where: includeInactive ? {} : { active: true }, orderBy: { sortOrder: "asc" } });
+  const find = () =>
+    prisma.pricingPlan.findMany({
+      where: { ...(includeInactive ? {} : { active: true }), ...(kind === "ALL" ? {} : { kind }) },
+      orderBy: { sortOrder: "asc" },
+    });
   const plans = await find();
   if (plans.length) return plans;
   await seedPlans(); // catalog table was emptied after this process seeded it

@@ -40,6 +40,7 @@ export function VerificationPanel({
   lastError,
   canVerify,
   failed,
+  onVerified,
 }: {
   websiteId: string;
   hostname: string;
@@ -47,6 +48,8 @@ export function VerificationPanel({
   lastError: string | null;
   canVerify: boolean;
   failed: boolean;
+  /** Called after successful verification (onboarding flow continues to the first scan). */
+  onVerified?: () => void;
 }) {
   const router = useRouter();
   const [method, setMethod] = useState<"DNS_TXT" | "HTTP_FILE">("DNS_TXT");
@@ -62,7 +65,8 @@ export function VerificationPanel({
         body: { method, authorizationConfirmed: authorized },
       });
       setResult({ ok: r.verified, message: r.verified ? "Ownership verified. Monitoring has started." : r.detail });
-      router.refresh();
+      if (r.verified && onVerified) onVerified();
+      else router.refresh();
     } catch (err) {
       setResult({ ok: false, message: (err as Error).message });
     } finally {

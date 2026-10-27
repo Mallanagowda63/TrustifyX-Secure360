@@ -46,6 +46,16 @@ interface Overview {
   payments: Array<{ id: string; razorpayPaymentId: string; amountPaise: number; status: string; method: string | null; errorDescription: string | null; refundedPaise: number; createdAt: string }>;
   invoices: Array<{ id: string; number: string; totalPaise: number; taxPaise: number; status: string; issuedAt: string; periodStart: string | null; periodEnd: string | null }>;
   plans: Plan[];
+  addons?: Array<{
+    code: string;
+    name: string;
+    tagline: string;
+    description: string;
+    features: string[];
+    monthly: Price;
+    active: boolean;
+    subscription: { mode: string; status: string; cycle: string; currentPeriodEnd: string | null; cancelAtPeriodEnd: boolean; accessUntil: string | null; grantReason: string | null } | null;
+  }>;
   config: { mode: "RECURRING" | "PREPAID"; configured: boolean; testMode: boolean; annualEnabled: boolean; graceDays: number };
 }
 
@@ -61,6 +71,7 @@ const STATE_LABEL: Record<string, { label: string; cls: string }> = {
 };
 
 export function BillingView({ initial, canManage, welcome }: { initial: Overview; canManage: boolean; welcome: boolean }) {
+  // Rendered on the marketing website (/account/billing); portal links go through SSO.
   const router = useRouter();
   const [o, setO] = useState<Overview>(initial);
   const [cycle, setCycle] = useState<"MONTHLY" | "ANNUAL">(initial.subscription?.cycle === "ANNUAL" ? "ANNUAL" : "MONTHLY");
@@ -168,7 +179,7 @@ export function BillingView({ initial, canManage, welcome }: { initial: Overview
         {o.entitlement.active && o.usage.connectedWebsites === 0 && (
           <div className="mt-4">
             <Notice tone="info">
-              <b>Subscription Active · Website Verification Required.</b> <Link className="underline" href="/websites">Add and verify your website</Link> to start monitoring.
+              <b>Subscription Active · Website Verification Required.</b> <a className="underline" href="/sso/open?target=portal&next=%2Fcheck">Open the Security Portal</a> to add and verify your website.
             </Notice>
           </div>
         )}
@@ -267,6 +278,57 @@ export function BillingView({ initial, canManage, welcome }: { initial: Overview
                 </div>
               );
             })}
+          </div>
+        </Section>
+      )}
+
+      {(o.addons ?? []).length > 0 && (
+        <Section title="Add-ons">
+          <div className="grid gap-4 md:grid-cols-2">
+            {(o.addons ?? []).map((a) => (
+              <div key={a.code} className="rounded-xl border border-navy-700 p-5">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-lg font-semibold">{a.name}</div>
+                    <div className="text-xs text-ink-muted">{a.tagline}</div>
+                  </div>
+                  <span className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${a.active ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-200" : "border-slate-500/50 text-slate-300"}`}>
+                    {a.active ? (a.subscription?.cancelAtPeriodEnd ? "Active · cancels at period end" : a.subscription?.mode === "COMPLIMENTARY" ? "Complimentary" : "Active") : "Not active"}
+                  </span>
+                </div>
+                <div className="mt-3 text-2xl font-semibold">
+                  {inr(a.monthly.subtotalPaise)}
+                  <span className="text-sm font-normal text-ink-muted">/mo + GST</span>
+                </div>
+                <div className="text-xs text-ink-faint">{inr(a.monthly.totalPaise)} incl. {a.monthly.taxRateBp / 100}% GST · Cloudflare charges, if any, are billed by Cloudflare</div>
+                <ul className="mt-3 space-y-1 text-xs text-ink-muted">
+                  {a.features.map((f) => (
+                    <li key={f}>✓ {f}</li>
+                  ))}
+                </ul>
+                {a.active && a.subscription?.accessUntil && <p className="mt-2 text-xs text-ink-faint">Service until {day(a.subscription.accessUntil)}</p>}
+                {canManage && (
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {!a.active && o.entitlement.active && (
+                      <Link className="btn btn-primary" href={`/checkout?addon=${a.code}&cycle=MONTHLY`}>Add {a.name}</Link>
+                    )}
+                    {!o.entitlement.active && !a.active && <span className="text-xs text-ink-faint">Requires an active plan.</span>}
+                    {a.active && a.subscription && a.subscription.mode !== "COMPLIMENTARY" && !a.subscription.cancelAtPeriodEnd && (
+                      <button
+                        className="btn btn-ghost"
+                        disabled={busy !== null}
+                        onClick={() => {
+                          if (!window.confirm(`Cancel ${a.name} at the end of the current period? Your base plan is not affected.`)) return;
+                          void act("addon-cancel", () => api<Overview>("/api/billing/addons/cancel", { body: { addonCode: a.code, atPeriodEnd: true } }), `${a.name} will end at the close of the current period.`);
+                        }}
+                      >
+                        Cancel add-on
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </Section>
       )}

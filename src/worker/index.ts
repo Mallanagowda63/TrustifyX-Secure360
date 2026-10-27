@@ -9,6 +9,11 @@ import { runScheduledReports } from "@/server/reports/scheduled";
 import { processWebhookEvent } from "@/server/billing/webhooks";
 import { reconcileBilling } from "@/server/billing/reconcile";
 import { ensurePlans } from "@/server/billing/plans";
+import { purgeExpiredMfaChallenges } from "@/server/auth/mfa";
+import { purgeExpiredSsoCodes } from "@/server/auth/sso";
+import { purgeOldSecurityEvents, syncAllProtection } from "@/server/protection/jobs";
+import { attachScanEvents, scanSweep } from "@/server/scanning/jobs";
+import { syncServers } from "@/server/servers/service";
 
 const RETENTION_DAYS = 400;
 
@@ -63,6 +68,9 @@ async function cleanup() {
     prisma.configSnapshot.deleteMany({ where: { checkedAt: { lt: cutoff } } }),
   ]);
   await prisma.invitation.deleteMany({ where: { expiresAt: { lt: new Date() }, acceptedAt: null } });
+  await purgeExpiredMfaChallenges();
+  await purgeExpiredSsoCodes();
+  await purgeOldSecurityEvents();
   return { sessions: sessions.count, checks: checks.count, snapshots: snaps.count };
 }
 
@@ -112,7 +120,18 @@ async function main() {
     concurrency: 2,
   });
 
-  for (const w of [availability, config, maintenance, billing]) {
+  const integrations = new Worker(
+    QUEUES.integrations,
+    async (job: Job) => {
+      if (job.name === "protection-sync") return syncAllProtection();
+      if (job.name === "scan-sweep") return scanSweep();
+      if (job.name === "server-sync") return syncServers();
+      throw new Error(`Unknown integrations job ${job.name}`);
+    },
+    { connection, concurrency: 1 },
+  );
+
+  for (const w of [availability, config, maintenance, billing, integrations]) {
     w.on("failed", (job, err) => log(`job failed ${w.name}/${job?.name} ${job?.id}:`, err.message));
     w.on("error", (err) => log(`worker error ${w.name}:`, err.message));
   }
@@ -126,13 +145,17 @@ async function main() {
   await mq.upsertJobScheduler("weekly-reports", { pattern: "0 7 * * 1", tz: "UTC" }, { name: "weekly-reports", opts });
   await mq.upsertJobScheduler("monthly-reports", { pattern: "0 7 1 * *", tz: "UTC" }, { name: "monthly-reports", opts });
   await mq.upsertJobScheduler("billing-reconcile", { every: 10 * 60_000 }, { name: "billing-reconcile", opts });
+  await queue(QUEUES.integrations).upsertJobScheduler("protection-sync", { every: 15 * 60_000 }, { name: "protection-sync", opts });
+  await queue(QUEUES.integrations).upsertJobScheduler("scan-sweep", { every: 5 * 60_000 }, { name: "scan-sweep", opts });
+  await queue(QUEUES.integrations).upsertJobScheduler("server-sync", { every: 10 * 60_000 }, { name: "server-sync", opts });
+  const scanEvents = attachScanEvents();
   await ensurePlans();
   // Run one scheduling pass immediately on boot.
   await mq.add("tick", {}, { removeOnComplete: true, removeOnFail: true });
 
   const shutdown = async (signal: string) => {
     log(`received ${signal}, draining...`);
-    await Promise.allSettled([availability.close(), config.close(), maintenance.close(), billing.close()]);
+    await Promise.allSettled([availability.close(), config.close(), maintenance.close(), billing.close(), integrations.close(), scanEvents.close()]);
     await prisma.$disconnect();
     connection.disconnect();
     process.exit(0);

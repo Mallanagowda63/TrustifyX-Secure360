@@ -8,6 +8,7 @@ if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 if (process.env.TEST_DATABASE_URL) process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
 process.env.DATABASE_URL ??= "postgresql://invalid/unused";
 process.env.APP_URL = "http://localhost:3000";
+process.env.PORTAL_URL = "http://portal.localhost:3000";
 process.env.MONITOR_ALLOW_PRIVATE_TARGETS = "false";
 process.env.MONITOR_DOWN_THRESHOLD = "2";
 process.env.ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString("base64");

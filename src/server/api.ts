@@ -3,7 +3,8 @@ import { ZodError, type ZodType } from "zod";
 import type { OrgRole } from "@prisma/client";
 import { env } from "./env";
 import { can, type Permission } from "./auth/rbac";
-import { resolveSession, sessionCookieName, type SessionContext } from "./auth/session";
+import { mfaEnrollmentRequired, resolveSession, sessionCookieName, type SessionContext } from "./auth/session";
+import { siteForHost, siteUrl, type Site } from "./sites";
 import { safeEqual } from "./security/crypto";
 import { rateLimit } from "./security/rate-limit";
 
@@ -59,8 +60,15 @@ function isSafeMethod(method: string) {
 }
 
 /** Origin check for state-changing requests (OWASP CSRF cheat sheet: verify origin). */
+/** Which of the two websites this request was made to (Host header). */
+export function requestSite(req: NextRequest): Site {
+  return siteForHost(req.headers.get("host") ?? req.nextUrl.host);
+}
+
 function checkOrigin(req: NextRequest) {
-  const expected = new URL(env().APP_URL).origin;
+  // The Origin must be the website the request was sent to: the marketing site and the portal
+  // are same-site (shared parent domain), so neither may post to the other's endpoints.
+  const expected = new URL(siteUrl(requestSite(req))).origin;
   const origin = req.headers.get("origin");
   const fetchSite = req.headers.get("sec-fetch-site");
   if (origin) {
@@ -80,6 +88,7 @@ interface PublicArgs<P> {
   req: NextRequest;
   params: P;
   ip: string;
+  site: Site;
   session: SessionContext | null;
 }
 interface AuthedArgs<P> {
@@ -136,9 +145,10 @@ export function publicRoute<P extends RouteParams = RouteParams>(
           );
         }
       }
-      const session = await resolveSession(req.cookies.get(sessionCookieName())?.value);
+      const site = requestSite(req);
+      const session = await resolveSession(req.cookies.get(sessionCookieName())?.value, site);
       const params = (await routeCtx?.params) ?? ({} as P);
-      return withNoStore(toResponse(await fn({ req, params, ip, session })));
+      return withNoStore(toResponse(await fn({ req, params, ip, site, session })));
     } catch (err) {
       return withNoStore(handleError(err));
     }
@@ -149,12 +159,13 @@ export function publicRoute<P extends RouteParams = RouteParams>(
 export function authedRoute<P extends RouteParams = RouteParams>(
   permission: Permission | null,
   fn: (args: AuthedArgs<P>) => Promise<unknown>,
+  opts: { mfaExempt?: boolean } = {},
 ) {
   return async (req: NextRequest, routeCtx: { params: Promise<P> }) => {
     try {
       const unsafe = !isSafeMethod(req.method);
       if (unsafe) checkOrigin(req);
-      const s = await resolveSession(req.cookies.get(sessionCookieName())?.value);
+      const s = await resolveSession(req.cookies.get(sessionCookieName())?.value, requestSite(req));
       if (!s) throw new ApiError(401, "Authentication required", "unauthenticated");
       if (unsafe) {
         const header = req.headers.get("x-csrf-token") ?? "";
@@ -163,6 +174,9 @@ export function authedRoute<P extends RouteParams = RouteParams>(
         }
       }
       if (!s.org || !s.role) throw new ApiError(403, "You are not a member of any organization", "no_org");
+      if (!opts.mfaExempt && mfaEnrollmentRequired(s)) {
+        throw new ApiError(403, "Your organization requires two-factor authentication. Set it up in Account Security.", "mfa_enrollment_required");
+      }
       if (permission && !can(s.role, permission)) throw forbidden();
       const ctx: AuthedContext = { ...s, org: s.org, role: s.role, ip: clientIp(req) };
       const params = (await routeCtx?.params) ?? ({} as P);
@@ -187,13 +201,14 @@ export function adminRoute<P extends RouteParams = RouteParams>(fn: (args: { req
     try {
       const unsafe = !isSafeMethod(req.method);
       if (unsafe) checkOrigin(req);
-      const s = await resolveSession(req.cookies.get(sessionCookieName())?.value);
+      const s = await resolveSession(req.cookies.get(sessionCookieName())?.value, requestSite(req));
       if (!s) throw new ApiError(401, "Authentication required", "unauthenticated");
       if (unsafe) {
         const header = req.headers.get("x-csrf-token") ?? "";
         if (!header || !safeEqual(header, s.session.csrfToken)) throw new ApiError(403, "Invalid CSRF token", "csrf");
       }
       if (!s.user.isPlatformAdmin) throw new ApiError(403, "Platform administrator access required", "forbidden");
+      if (!s.user.totpEnabledAt) throw new ApiError(403, "Platform administrator access requires two-factor authentication", "mfa_required");
       const params = (await routeCtx?.params) ?? ({} as P);
       return withNoStore(toResponse(await fn({ req, params, ctx: { ...s, ip: clientIp(req) } })));
     } catch (err) {

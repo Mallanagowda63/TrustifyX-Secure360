@@ -9,11 +9,15 @@
 # Usage (as root, after `docker compose up` created the bridge):
 #   sudo ./deploy/egress-firewall.sh apply
 #   sudo ./deploy/egress-firewall.sh remove
+# Vulnerability scanner bridge (web ports only):
+#   sudo BRIDGE=br-tx-scan CHAIN=TX-SCAN ALLOW_TCP_PORTS=80,443 ./deploy/egress-firewall.sh apply
 # Persist with `netfilter-persistent save` (iptables-persistent package) or a systemd unit.
 set -euo pipefail
 
 BRIDGE="${BRIDGE:-br-tx-egress}"
-CHAIN="TX-EGRESS"
+CHAIN="${CHAIN:-TX-EGRESS}"
+# Optional: only these destination TCP ports (comma separated); all other TCP and all UDP refused.
+ALLOW_TCP_PORTS="${ALLOW_TCP_PORTS:-}"
 
 V4_DENY=(
   0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12
@@ -32,6 +36,10 @@ apply() {
   for net in "${V4_DENY[@]}"; do
     iptables -A "$CHAIN" -d "$net" -j REJECT --reject-with icmp-net-prohibited
   done
+  if [[ -n "$ALLOW_TCP_PORTS" ]]; then
+    iptables -A "$CHAIN" -p tcp -m multiport ! --dports "$ALLOW_TCP_PORTS" -j REJECT --reject-with tcp-reset
+    iptables -A "$CHAIN" -p udp -j REJECT
+  fi
   iptables -A "$CHAIN" -j RETURN
   iptables -C DOCKER-USER -i "$BRIDGE" -j "$CHAIN" 2>/dev/null || iptables -I DOCKER-USER -i "$BRIDGE" -j "$CHAIN"
 

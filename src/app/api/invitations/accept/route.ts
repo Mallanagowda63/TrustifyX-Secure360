@@ -12,7 +12,7 @@ const body = z.object({
 });
 
 export const POST = publicRoute(
-  async ({ req, ip, session }) => {
+  async ({ req, ip, site, session }) => {
     const input = await readJson(req, body);
     if (session) {
       const header = req.headers.get("x-csrf-token") ?? "";
@@ -21,7 +21,7 @@ export const POST = publicRoute(
     const result = await acceptInvitation(
       input,
       session ? { userId: session.user.id, email: session.user.email } : null,
-      { ip, userAgent: req.headers.get("user-agent") },
+      { ip, userAgent: req.headers.get("user-agent"), site },
     );
     if (session) await switchOrg(session.session.id, session.user.id, result.orgId);
     const res = NextResponse.json({ ok: true, orgId: result.orgId });

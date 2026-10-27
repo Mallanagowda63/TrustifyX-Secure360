@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getPageSession } from "@/server/auth/page";
 import { can } from "@/server/auth/rbac";
-import { getEntitlement } from "@/server/billing/entitlements";
+import { addonEntitlement, getEntitlement } from "@/server/billing/entitlements";
 import { gatewayAvailable, isTestMode } from "@/server/billing/gateway";
 import { annualEnabled, formatInr, getPlanByCode, planRank, priceFor } from "@/server/billing/plans";
 import { env } from "@/server/env";
@@ -12,21 +12,23 @@ import { PayButton } from "./pay-button";
 
 export const dynamic = "force-dynamic";
 
-export default async function CheckoutPage({ searchParams }: { searchParams: Promise<{ plan?: string; cycle?: string }> }) {
+export default async function CheckoutPage({ searchParams }: { searchParams: Promise<{ plan?: string; addon?: string; cycle?: string }> }) {
   const sp = await searchParams;
-  const code = (sp.plan ?? "").toUpperCase().replace(/[^A-Z_]/g, "").slice(0, 40);
+  const isAddon = Boolean(sp.addon);
+  const code = (sp.addon ?? sp.plan ?? "").toUpperCase().replace(/[^A-Z_]/g, "").slice(0, 40);
   const cycle = sp.cycle === "ANNUAL" ? "ANNUAL" : "MONTHLY";
   const session = await getPageSession();
-  if (!session) redirect(`/login?next=${encodeURIComponent(`/checkout?plan=${code}&cycle=${cycle}`)}`);
+  if (!session) redirect(`/login?next=${encodeURIComponent(`/checkout?${isAddon ? "addon" : "plan"}=${code}&cycle=${cycle}`)}`);
   if (!session.org || !session.role) redirect("/login?error=no_org");
 
   const plan = code ? await getPlanByCode(code) : null;
-  if (!plan || !plan.active) redirect("/#pricing");
+  if (!plan || !plan.active || (plan.kind === "ADDON") !== isAddon) redirect("/#pricing");
   const useCycle = cycle === "ANNUAL" && annualEnabled(plan) ? "ANNUAL" : "MONTHLY";
   const price = priceFor(plan, useCycle);
   const ent = await getEntitlement(session.org.id);
-  const current = ent.active && ent.subscription && ent.subscription.mode !== "COMPLIMENTARY" && ent.state !== "GRACE" ? ent.subscription : null;
-  const samePlan = current && current.planId === plan.id && current.cycle === useCycle;
+  const addonState = isAddon ? await addonEntitlement(session.org.id, plan.code) : null;
+  const current = !isAddon && ent.active && ent.subscription && ent.subscription.mode !== "COMPLIMENTARY" && ent.state !== "GRACE" ? ent.subscription : null;
+  const samePlan = isAddon ? Boolean(addonState?.active) : current && current.planId === plan.id && current.cycle === useCycle;
   const isUpgrade = current ? planRank(plan) >= planRank(current.plan) : false;
   const canManage = can(session.role, "billing.manage");
   const e = env();
@@ -47,7 +49,7 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
           <section className="card p-6">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-xl font-semibold">{plan.name} plan</h2>
+                <h2 className="text-xl font-semibold">{plan.name}{isAddon ? " (add-on)" : " plan"}</h2>
                 <p className="text-sm text-ink-muted">{plan.tagline}</p>
               </div>
               <span className="rounded-md border border-navy-600 px-2 py-0.5 text-xs text-ink-muted">{useCycle === "ANNUAL" ? "Billed yearly" : "Billed monthly"}</span>
@@ -62,12 +64,27 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
             </ul>
             <div className="mt-6 rounded-lg border border-navy-700 bg-navy-900 p-4 text-sm">
               <div className="font-medium text-ink">What happens next</div>
-              <ol className="mt-2 list-decimal space-y-1 pl-5 text-ink-muted">
-                <li>Pay securely in the Razorpay window.</li>
-                <li>Our server verifies the payment with Razorpay before activating your plan.</li>
-                <li>Add your website and verify ownership (DNS TXT or verification file).</li>
-                <li>Monitoring starts automatically after verification.</li>
-              </ol>
+              {isAddon ? (
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-ink-muted">
+                  <li>Pay securely in the Razorpay window.</li>
+                  <li>Our server verifies the payment with Razorpay before enabling the add-on.</li>
+                  <li>Connect your own Cloudflare account in the portal (Firewall &amp; Protection).</li>
+                  <li>Review each protection change before it is applied.</li>
+                </ol>
+              ) : (
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-ink-muted">
+                  <li>Pay securely in the Razorpay window.</li>
+                  <li>Our server verifies the payment with Razorpay before activating your plan.</li>
+                  <li>Add your website and verify ownership (DNS TXT or verification file).</li>
+                  <li>Monitoring starts automatically after verification.</li>
+                </ol>
+              )}
+              {isAddon && (
+                <p className="mt-3 text-xs text-ink-faint">
+                  This add-on does not include a paid Cloudflare plan. Cloudflare features beyond your Cloudflare plan are unavailable until you upgrade with
+                  Cloudflare, who bill you directly. 24/7 incident response or managed SOC services are not included.
+                </p>
+              )}
             </div>
           </section>
 
@@ -88,11 +105,13 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
             <div className="mt-5 space-y-3">
               {!gatewayAvailable() ? (
                 <Notice tone="warn">Online payments are not enabled on this server yet. Please contact {e.SUPPORT_EMAIL}.</Notice>
+              ) : isAddon && !ent.active ? (
+                <Notice tone="warn">Add-ons require an active Starter, Growth or Business plan. <Link className="underline" href="/#pricing">Choose a plan</Link></Notice>
               ) : !canManage ? (
                 <Notice>Only organization owners and admins can purchase or change plans.</Notice>
               ) : samePlan ? (
                 <Notice tone="success">
-                  You already have this plan. <Link className="underline" href="/billing">Manage billing</Link>
+                  You already have {isAddon ? "this add-on" : "this plan"}. <Link className="underline" href="/account/billing">Manage billing</Link>
                 </Notice>
               ) : (
                 <>
@@ -104,7 +123,7 @@ export default async function CheckoutPage({ searchParams }: { searchParams: Pro
                     </Notice>
                   )}
                   {isTestMode() && <Notice tone="warn">Razorpay test mode: use Razorpay test cards/UPI. No real money is charged.</Notice>}
-                  <PayButton planCode={plan.code} cycle={useCycle} change={Boolean(current)} totalLabel={formatInr(price.totalPaise)} />
+                  <PayButton planCode={plan.code} cycle={useCycle} change={Boolean(current)} addon={isAddon} totalLabel={formatInr(price.totalPaise)} />
                 </>
               )}
             </div>

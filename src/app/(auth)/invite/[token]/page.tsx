@@ -40,7 +40,8 @@ export default function InvitePage() {
     setError(null);
     try {
       await api("/api/invitations/accept", { body: { token, ...body } });
-      router.replace("/dashboard");
+      // Continue into the Security Portal (signed in there via SSO).
+      window.location.assign("/sso/open?target=portal&next=%2F");
       router.refresh();
     } catch (err) {
       setError((err as Error).message);

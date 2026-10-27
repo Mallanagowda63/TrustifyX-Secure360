@@ -31,6 +31,8 @@ const nextConfig: NextConfig = {
   // Docker builds set BUILD_STANDALONE=1 to produce a self-contained server (see Dockerfile).
   output: process.env.BUILD_STANDALONE === "1" ? "standalone" : undefined,
   poweredByHeader: false,
+  // Local two-site development: the portal is served at portal.localhost.
+  allowedDevOrigins: ["portal.localhost", "localhost"],
   serverExternalPackages: ["pdfkit", "@node-rs/argon2", "bullmq", "ioredis", "nodemailer"],
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders }];

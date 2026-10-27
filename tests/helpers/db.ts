@@ -3,6 +3,7 @@ import type { OrgRole } from "@prisma/client";
 import { prisma } from "@/server/db";
 import { randomToken } from "@/server/security/crypto";
 import { seedPlans } from "@/server/billing/plans";
+import { redisFast } from "@/server/redis";
 
 let migrated = false;
 
@@ -20,6 +21,19 @@ export async function resetDb() {
     SELECT tablename FROM pg_tables WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'`;
   if (tables.length) {
     await prisma.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t.tablename}"`).join(", ")} RESTART IDENTITY CASCADE`);
+  }
+  await clearRateLimits();
+}
+
+/** Rate-limit counters live in the (test-only) Redis DB and would otherwise leak between tests and runs. */
+async function clearRateLimits() {
+  const r = redisFast();
+  try {
+    if (r.status !== "ready") await new Promise((resolve) => { r.once("ready", resolve); setTimeout(resolve, 2000); });
+    const keys = await r.keys("rl:*");
+    if (keys.length) await r.del(...keys);
+  } catch {
+    // Redis unavailable: the in-memory fallback is per process and short-lived.
   }
 }
 

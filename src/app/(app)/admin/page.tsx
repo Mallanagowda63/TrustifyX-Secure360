@@ -7,6 +7,7 @@ import { AdminView } from "./admin-view";
 export default async function AdminPage() {
   const s = await requirePageSession();
   if (!s.user.isPlatformAdmin) redirect("/dashboard");
+  if (!s.user.totpEnabledAt) redirect("/account-security?required=admin");
   const data = await adminBillingOverview();
   return (
     <div>

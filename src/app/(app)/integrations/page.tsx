@@ -42,9 +42,15 @@ export default async function IntegrationsPage() {
               </div>
             </div>
             <div className="mt-auto pt-5">
-              <button className="btn btn-ghost" disabled title="This connector is planned and not yet available">
-                Connector coming soon
-              </button>
+              {i.availability === "available" && i.href ? (
+                <a className="btn btn-primary" href={i.href}>
+                  {i.status === "CONNECTED" ? "Manage" : "Set up"}
+                </a>
+              ) : (
+                <button className="btn btn-ghost" disabled title="This connector is planned and not yet available">
+                  Connector coming soon
+                </button>
+              )}
             </div>
           </div>
         ))}

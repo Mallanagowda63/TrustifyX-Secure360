@@ -4,7 +4,7 @@ import { env } from "../env";
 import { ApiError } from "../api";
 import { assertCan, type Actor } from "../services/actor";
 import { billingAudit } from "./audit";
-import { getEntitlement } from "./entitlements";
+import { accessUntil, getEntitlement } from "./entitlements";
 import {
   billingGateway,
   BillingNotConfiguredError,
@@ -27,9 +27,11 @@ function requireGateway() {
   if (!gatewayAvailable()) throw new ApiError(503, new BillingNotConfiguredError().message, "billing_not_configured");
 }
 
-async function resolvePlan(code: string, cycle: BillingCycle) {
+async function resolvePlan(code: string, cycle: BillingCycle, kind: "BASE" | "ADDON" = "BASE") {
   const plan = await getPlanByCode(code);
   if (!plan || !plan.active) throw new ApiError(400, "Unknown or unavailable plan", "invalid_plan");
+  // Add-ons are bought on top of a base plan through their own checkout (never as the base plan).
+  if (plan.kind !== kind) throw new ApiError(400, kind === "BASE" ? "This is an add-on. Choose a base plan first." : "Unknown add-on", "invalid_plan");
   if (cycle === "ANNUAL" && !annualEnabled(plan)) throw new ApiError(400, "Annual billing is not available for this plan", "invalid_cycle");
   return plan;
 }
@@ -288,6 +290,11 @@ export async function cancelSubscription(actor: Actor, input: { atPeriodEnd: boo
   const ent = await getEntitlement(actor.orgId);
   const sub = ent.subscription;
   if (!ent.active || !sub) throw new ApiError(400, "There is no active subscription to cancel.");
+  return cancelOne(actor, sub, input.atPeriodEnd);
+}
+
+async function cancelOne(actor: Actor, sub: Subscription & { plan: PricingPlan }, atPeriodEnd: boolean) {
+  const input = { atPeriodEnd };
   if (sub.mode === "COMPLIMENTARY") throw new ApiError(400, "Complimentary access is managed by TrustifyX support.");
   const now = new Date();
 
@@ -318,6 +325,40 @@ export async function cancelSubscription(actor: Actor, input: { atPeriodEnd: boo
   return billingOverview(actor.orgId);
 }
 
+// ─────────────────────────────── add-ons (e.g. Secure360 Protect) ───────────────────────────────
+
+/** Buys an add-on on top of an active base plan, through the same verified Razorpay flow. */
+export async function startAddonCheckout(actor: Actor, input: { addonCode: string; cycle: BillingCycle }) {
+  assertCan(actor, "billing.manage");
+  const plan = await resolvePlan(input.addonCode, input.cycle, "ADDON");
+  const base = await getEntitlement(actor.orgId);
+  if (!base.active) throw new ApiError(402, "Add-ons require an active Starter, Growth or Business plan.", "subscription_required");
+  const current = await activeAddonSubscription(actor.orgId, plan.code);
+  if (current && !current.cancelAtPeriodEnd && current.mode !== "COMPLIMENTARY") throw new ApiError(409, `${plan.name} is already active.`, "already_subscribed");
+  return createProviderCheckout(actor, plan, input.cycle);
+}
+
+async function activeAddonSubscription(orgId: string, code: string) {
+  const now = new Date();
+  const subs = await prisma.subscription.findMany({
+    where: { orgId, plan: { code, kind: "ADDON" }, status: { in: [...OPEN_STATUSES, "CANCELLED", "COMPLETED"] } },
+    include: { plan: true },
+    orderBy: { currentPeriodEnd: "desc" },
+  });
+  return subs.find((s) => {
+    const until = accessUntil(s);
+    return until !== null && until > now && (!s.currentPeriodStart || s.currentPeriodStart <= now);
+  }) ?? null;
+}
+
+/** Cancels only the add-on; the base plan is untouched. */
+export async function cancelAddon(actor: Actor, input: { addonCode: string; atPeriodEnd: boolean }) {
+  assertCan(actor, "billing.manage");
+  const sub = await activeAddonSubscription(actor.orgId, input.addonCode);
+  if (!sub) throw new ApiError(400, "This add-on is not active.", "not_active");
+  return cancelOne(actor, sub, input.atPeriodEnd);
+}
+
 /** Pulls the latest state for this org's open recurring subscriptions from Razorpay. */
 export async function syncOrgBilling(actor: Actor) {
   assertCan(actor, "billing.manage");
@@ -338,9 +379,10 @@ export async function syncOrgBilling(actor: Actor) {
 }
 
 export async function billingOverview(orgId: string) {
-  const [ent, plans, websites, connected, members, payments, invoices, pending, history] = await Promise.all([
+  const [ent, plans, addonPlans, websites, connected, members, payments, invoices, pending, history] = await Promise.all([
     getEntitlement(orgId),
     listPlans(),
+    listPlans(false, "ADDON"),
     prisma.website.count({ where: { orgId } }),
     prisma.website.count({ where: { orgId, status: "CONNECTED" } }),
     prisma.membership.count({ where: { orgId } }),
@@ -405,6 +447,18 @@ export async function billingOverview(orgId: string) {
     payments,
     invoices,
     plans: plans.map(presentPlan),
+    addons: await Promise.all(
+      addonPlans.map(async (p) => {
+        const s = await activeAddonSubscription(orgId, p.code);
+        return {
+          ...presentPlan(p),
+          active: Boolean(s),
+          subscription: s
+            ? { id: s.id, mode: s.mode, status: s.status, cycle: s.cycle, currentPeriodEnd: s.currentPeriodEnd, cancelAtPeriodEnd: s.cancelAtPeriodEnd, accessUntil: accessUntil(s), grantReason: s.mode === "COMPLIMENTARY" ? s.grantReason : null }
+            : null,
+        };
+      }),
+    ),
     config: { mode: billingMode(), configured: gatewayAvailable(), testMode: isTestMode(), annualEnabled: annualEnabled(), graceDays: env().BILLING_GRACE_DAYS },
   };
 }

@@ -33,7 +33,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    networks: [internal]
+    networks: [internal, scanq]
 
   migrate:
     profiles: ["full"]
@@ -80,6 +80,25 @@ services:
     # bridge (`egress`) so host firewall rules can restrict it (deploy/egress-firewall.sh).
     networks: [internal, egress]
 
+  # Isolated vulnerability scanner: OWASP ZAP + scan runner. No database credentials and no access
+  # to the internal network; it only reaches Redis (scan queue) and, through its own firewalled
+  # bridge, the websites customers have verified and authorized.
+  scanner:
+    profiles: ["full", "scanner"]
+    build: { context: ., target: scanner }
+    restart: unless-stopped
+    environment:
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      redis: { condition: service_healthy }
+    cpus: 1.5
+    mem_limit: 3g
+    pids_limit: 512
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    tmpfs: ["/tmp:size=512m"]
+    networks: [scanq, scan-egress]
+
 volumes:
   pgdata:
   redisdata:
@@ -91,3 +110,10 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-tx-egress
+  # Redis-only link for the scanner.
+  scanq:
+    driver: bridge
+  scan-egress:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-tx-scan

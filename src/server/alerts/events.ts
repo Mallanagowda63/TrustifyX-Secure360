@@ -1,11 +1,12 @@
 import type { Finding, Incident, Website } from "@prisma/client";
-import { env } from "../env";
+import { portalUrl } from "../sites";
 import { renderEmail } from "./mailer";
 import { dispatchAlert } from "./notify";
 
 type Site = Pick<Website, "id" | "orgId" | "displayName" | "hostname" | "url">;
 
-const link = (path: string) => `${env().APP_URL.replace(/\/$/, "")}${path}`;
+// Alert emails link into the customer Security Portal.
+const link = (path: string) => portalUrl(path);
 
 export async function alertDowntime(site: Site, incident: Incident, lastError: string | null) {
   const subject = `[DOWN] ${site.displayName} (${site.hostname}) is not responding`;

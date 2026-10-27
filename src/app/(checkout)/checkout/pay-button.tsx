@@ -6,7 +6,7 @@ import { api } from "@/lib/client";
 import { Notice } from "@/components/ui";
 import { consumeLastFailure, runCheckout, waitForActivation, type CheckoutPayload } from "@/components/razorpay";
 
-export function PayButton({ planCode, cycle, change, totalLabel }: { planCode: string; cycle: "MONTHLY" | "ANNUAL"; change: boolean; totalLabel: string }) {
+export function PayButton({ planCode, cycle, change, totalLabel, addon = false }: { planCode: string; cycle: "MONTHLY" | "ANNUAL"; change: boolean; totalLabel: string; addon?: boolean }) {
   const router = useRouter();
   const [agreed, setAgreed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -16,7 +16,9 @@ export function PayButton({ planCode, cycle, change, totalLabel }: { planCode: s
     setBusy(true);
     setMsg(null);
     try {
-      const { checkout } = await api<{ checkout: CheckoutPayload }>(change ? "/api/billing/change-plan" : "/api/billing/checkout", { body: { planCode, cycle } });
+      const { checkout } = addon
+        ? await api<{ checkout: CheckoutPayload }>("/api/billing/addons/checkout", { body: { addonCode: planCode, cycle } })
+        : await api<{ checkout: CheckoutPayload }>(change ? "/api/billing/change-plan" : "/api/billing/checkout", { body: { planCode, cycle } });
       const outcome = await runCheckout(checkout);
       if (outcome.status === "dismissed") {
         const failure = consumeLastFailure();
@@ -30,13 +32,13 @@ export function PayButton({ planCode, cycle, change, totalLabel }: { planCode: s
         return;
       }
       setMsg({ tone: "info", text: "Payment received. Waiting for Razorpay to confirm it…" });
-      const active = await waitForActivation();
+      const active = await waitForActivation(60_000, addon ? planCode : undefined);
       if (active) {
-        setMsg({ tone: "success", text: "Your subscription is active. Redirecting you to add your website…" });
-        router.push("/websites?onboarding=1");
-        router.refresh();
+        setMsg({ tone: "success", text: addon ? "Payment verified. The add-on is active. Redirecting…" : "Payment verified. Your subscription is active. Redirecting…" });
+        window.location.assign(addon ? "/account/billing?addon=1" : "/account?paid=1");
       } else {
-        setMsg({ tone: "warn", text: "Your payment is being confirmed. This can take a few minutes; your plan activates automatically once confirmed. You can check Billing for the status." });
+        setMsg({ tone: "warn", text: "Payment Confirmation Pending. This can take a few minutes; your plan activates automatically once Razorpay confirms it." });
+        window.location.assign("/account");
         setBusy(false);
       }
     } catch (err) {

@@ -71,12 +71,12 @@ Each monitoring job also re-checks the entitlement before making any request.
    ```
 3. **Subscriptions:** confirm the Subscriptions product is enabled for your account (Dashboard → Subscriptions). If recurring payments are not available, set `BILLING_MODE=prepaid`. Customers then pay one-time orders and renew manually with reminders; the UI never promises auto-renewal in that mode.
 4. **Webhook:** Account & Settings → Webhooks → Add New Webhook
-   - URL: `https://<your-domain>/api/webhooks/razorpay`. Locally, use a tunnel such as `cloudflared tunnel --url http://localhost:3000` or ngrok.
+   - URL: `https://<marketing-domain>/api/webhooks/razorpay` (the `APP_URL` host, e.g. `secure360.trustifyx.in`). Locally, use a tunnel such as `cloudflared tunnel --url http://localhost:3000` or ngrok.
    - Secret: a long random string → `RAZORPAY_WEBHOOK_SECRET`
    - Active events: `subscription.authenticated`, `subscription.activated`, `subscription.charged`, `subscription.pending`, `subscription.halted`, `subscription.cancelled`, `subscription.completed`, `subscription.paused`, `subscription.resumed`, `subscription.updated`, `payment.authorized`, `payment.captured`, `payment.failed`, `order.paid`, `refund.processed`
 5. Optional: `BILLING_ANNUAL_ENABLED=true` to offer annual plans (default catalog: 10× monthly for 12 months). Leave it off unless you intend to sell annual plans.
 6. Set invoice details: `BILLING_SELLER_NAME`, `BILLING_SELLER_ADDRESS`, `BILLING_SELLER_GSTIN`, and **review the tax treatment with your accountant** (GST rate, SAC code, place of supply).
-7. Restart web and worker. `/billing` should no longer show "Online payments are not configured".
+7. Restart web and worker. `/account/billing` (marketing site) should no longer show "Online payments are not configured".
 
 The webhook route is excluded from CSRF/cookie auth by design; its only authentication is the HMAC over the raw body.
 
@@ -99,9 +99,9 @@ Manual, with real test keys:
 | Failed payment | Use a failure test card/UPI from Razorpay's [test card docs](https://razorpay.com/docs/payments/payments/test-card-details/), or click "Failure" on the test bank page |
 | UPI success / failure | `success@razorpay` / `failure@razorpay` |
 | Duplicate webhook | Dashboard → Webhooks → resend an event: the API answers `duplicate: true` and nothing changes |
-| Missed webhook | Disable the webhook, pay, then use **Refresh status** on `/billing` or wait for the 10-minute reconciliation |
+| Missed webhook | Disable the webhook, pay, then use **Refresh status** on `/account` or wait for the 10-minute reconciliation |
 | Refund | Dashboard → Payments → Refund (full): subscription ends, invoice shows "Refunded", sites pause |
-| Cancellation | `/billing` → Cancel at period end / Cancel now |
+| Cancellation | `/account/billing` → Cancel at period end / Cancel now |
 | Renewal / failure | Razorpay test mode can simulate subscription charges from the dashboard where available. Otherwise rely on the automated tests above |
 
 Confirm in `/admin` (platform admin) that events show as processed and no webhook failures remain.

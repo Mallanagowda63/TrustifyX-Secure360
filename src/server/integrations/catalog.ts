@@ -8,7 +8,9 @@ export interface IntegrationDefinition {
   provides: string[];
   requires: string[];
   /** Integrations are opt-in and separate from basic URL monitoring. */
-  availability: "planned";
+  availability: "planned" | "available";
+  /** Portal page that manages an available connector. */
+  href?: string;
 }
 
 /**
@@ -22,18 +24,20 @@ export const INTEGRATIONS: IntegrationDefinition[] = [
   {
     type: "CLOUDFLARE_WAF",
     name: "Cloudflare WAF",
-    summary: "Import firewall events and security-level settings for zones you own on Cloudflare.",
-    provides: ["WAF / managed-rule events by action and rule", "Rate-limiting and bot-management events", "Security level and SSL/TLS mode changes"],
-    requires: ["Scoped API token with Zone:Read and Analytics:Read", "Zone matching a verified website"],
-    availability: "planned",
+    summary: "Connect your Cloudflare account to manage protection for verified websites and import real security events.",
+    provides: ["Reviewed, verified protection settings and TrustifyX-managed firewall rules", "Security events by action, rule and country", "Edge DDoS / proxy status and origin-exposure warnings"],
+    requires: ["Scoped Cloudflare API token (no password or Global API Key)", "Zone matching a verified website", "Secure360 Protect add-on"],
+    availability: "available",
+    href: "/protection",
   },
   {
     type: "WAZUH",
-    name: "Wazuh",
-    summary: "Receive security alerts from your Wazuh manager about servers running the Wazuh agent.",
-    provides: ["Host intrusion detection alerts", "File-integrity monitoring events", "Vulnerability detector results reported by your Wazuh manager"],
-    requires: ["Wazuh manager API URL and read-only API user", "Agents installed on your servers"],
-    availability: "planned",
+    name: "Wazuh server security",
+    summary: "Install the Wazuh agent on servers you control to receive file-integrity, malware-related and security-log alerts.",
+    provides: ["Agent connectivity status", "File integrity monitoring alerts", "Rootkit / malware-related alerts where detectors are configured"],
+    requires: ["Root/administrator access to a VPS, cloud VM or dedicated server (not shared hosting)", "TrustifyX Wazuh manager configured (deploy/)", "Business plan or Secure360 Protect add-on"],
+    availability: "available",
+    href: "/servers",
   },
   {
     type: "GITHUB",
@@ -45,11 +49,12 @@ export const INTEGRATIONS: IntegrationDefinition[] = [
   },
   {
     type: "OWASP_ZAP",
-    name: "OWASP ZAP baseline",
-    summary: "Run an authorized, passive ZAP baseline scan against a verified website on request.",
-    provides: ["Passive scan alerts (no attack payloads)", "Comparison with previous baseline runs"],
-    requires: ["Verified website ownership", "Separate written authorization per scan", "Isolated scanner worker with egress restrictions"],
-    availability: "planned",
+    name: "OWASP ZAP scanning",
+    summary: "Run authorized OWASP ZAP scans of your verified websites from an isolated scanner.",
+    provides: ["Passive baseline scans (no attack payloads), on demand or scheduled", "Optional active scans in a maintenance window (Business plan)", "Findings with evidence, remediation and downloadable reports"],
+    requires: ["Verified website ownership", "Explicit authorization per scan or schedule", "Isolated scanner container deployed (deploy/)"],
+    availability: "available",
+    href: "/scans",
   },
 ];
 

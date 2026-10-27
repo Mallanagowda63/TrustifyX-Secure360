@@ -13,13 +13,26 @@ Role column: minimum org role (Viewer < Member < Admin < Owner).
 
 | Method | Path | Role | Body / notes |
 |---|---|---|---|
-| POST | `/auth/signup` | public | `{ name, email, password, orgName }`, creates user + org (Owner) |
-| POST | `/auth/login` | public | `{ email, password }` |
+| POST | `/auth/signup` | public | `{ name, email, password, orgName }`, creates user + org (Owner). Marketing website only (404 on the portal) |
+| POST | `/auth/login` | public | `{ email, password, remember? }`; the session is bound to the website (host) that received the request |
+| POST | `/auth/forgot-password` | public | `{ email }`; always returns the same response; sends a 30-minute single-use link to the portal |
+| POST | `/auth/reset-password` | public | `{ token, password }`; revokes all sessions of the user |
 | POST | `/auth/logout` | any | |
 | GET | `/auth/me` | any | user, active org, role, orgs, csrfToken |
 | POST | `/auth/switch-org` | any | `{ orgId }` (must be a member) |
 | GET | `/invitations/:token` | public | invitation preview |
 | POST | `/invitations/accept` | public / signed-in | `{ token, name?, password? }` |
+
+### Single sign-on between the two websites (browser redirects, not JSON)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/sso/open?target=portal\|marketing&next=/path` | starts SSO to the other website |
+| GET | `/sso/begin?next=/path` | target site: sets the `state` cookie, redirects to the other site's `/sso/authorize` |
+| GET | `/sso/authorize?state=…&next=…` | source site: requires a session; issues a 60-second single-use code |
+| GET | `/sso/callback?code=…&state=…` | target site: validates state + code, creates a new session, redirects to `next` |
+
+See `docs/PORTAL.md` for the security model.
 
 ## Organization & team
 

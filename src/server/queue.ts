@@ -1,11 +1,16 @@
 import { Queue, type JobsOptions } from "bullmq";
 import { redis } from "./redis";
+import { SCAN_QUEUE } from "./scanning/constants";
 
 export const QUEUES = {
   availability: "monitor-availability",
   config: "monitor-config",
   maintenance: "maintenance",
   billing: "billing-webhooks",
+  /** Third-party integration syncs (Cloudflare, ...), separate so slow APIs never delay monitoring. */
+  integrations: "integrations",
+  /** Consumed only by the isolated scanner container (src/scanner). */
+  scans: SCAN_QUEUE,
 } as const;
 
 const queues = new Map<string, Queue>();

@@ -5,6 +5,9 @@ import { audit } from "../audit";
 import { ApiError } from "../api";
 import { burnPasswordCheck, hashPassword, passwordProblems, verifyPassword } from "../auth/password";
 import { createSession } from "../auth/session";
+import { completeDueMfaReset, createMfaChallenge } from "../auth/mfa";
+import type { Site } from "../sites";
+import { marketingUrl } from "../sites";
 import { randomToken, sha256 } from "../security/crypto";
 import { rateLimit } from "../security/rate-limit";
 import { mailTransport, renderEmail } from "../alerts/mailer";
@@ -31,7 +34,14 @@ function slugify(name: string) {
 interface ClientInfo {
   ip: string;
   userAgent?: string | null;
+  /** Website the session is created for (cookies are host-only). */
+  site?: Site;
+  /** "Remember me": persistent cookie for SESSION_TTL_HOURS; otherwise a browser-session cookie. */
+  persistent?: boolean;
 }
+
+const sessionFor = (userId: string, orgId: string | null, client: ClientInfo) =>
+  createSession({ userId, orgId, ip: client.ip, userAgent: client.userAgent, site: client.site, persistent: client.persistent });
 
 export async function signup(input: { name: string; email: string; password: string; orgName: string }, client: ClientInfo) {
   if (!env().ALLOW_SIGNUP) throw new ApiError(403, "Self-service signup is disabled. Ask your administrator for an invitation.");
@@ -50,7 +60,7 @@ export async function signup(input: { name: string; email: string; password: str
     return { user, org };
   });
   await audit({ orgId: org.id, userId: user.id, ip: client.ip, action: "auth.signup", targetType: "user", targetId: user.id });
-  return { user, org, session: await createSession({ userId: user.id, orgId: org.id, ip: client.ip, userAgent: client.userAgent }) };
+  return { user, org, session: await sessionFor(user.id, org.id, client) };
 }
 
 export async function login(input: { email: string; password: string }, client: ClientInfo) {
@@ -78,12 +88,24 @@ export async function login(input: { email: string; password: string }, client: 
     await audit({ userId: user.id, ip: client.ip, action: lock ? "auth.locked" : "auth.login_failed", targetType: "user", targetId: user.id });
     throw new ApiError(401, "Invalid email or password", "invalid_credentials");
   }
+  let mfaWasReset = false;
+  if (user.totpEnabledAt) {
+    mfaWasReset = await completeDueMfaReset(user.id, client.ip);
+    if (!mfaWasReset) {
+      // Password step passed; no session exists until the second factor is verified.
+      await prisma.user.update({ where: { id: user.id }, data: { failedLogins: 0, lockedUntil: null } });
+      await audit({ userId: user.id, ip: client.ip, action: "auth.mfa_challenge", targetType: "user", targetId: user.id });
+      return { kind: "mfa" as const, user, mfaChallenge: await createMfaChallenge(user.id, client) };
+    }
+  }
   await prisma.user.update({ where: { id: user.id }, data: { failedLogins: 0, lockedUntil: null, lastLoginAt: new Date() } });
   const membership = await prisma.membership.findFirst({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
   await audit({ orgId: membership?.orgId, userId: user.id, ip: client.ip, action: "auth.login", targetType: "user", targetId: user.id });
   return {
+    kind: "session" as const,
     user,
-    session: await createSession({ userId: user.id, orgId: membership?.orgId ?? null, ip: client.ip, userAgent: client.userAgent }),
+    mfaWasReset,
+    session: await sessionFor(user.id, membership?.orgId ?? null, client),
   };
 }
 
@@ -150,7 +172,7 @@ export async function inviteMember(actor: Actor, input: { email: string; role: O
     },
     include: { org: { select: { name: true } } },
   });
-  const link = `${env().APP_URL.replace(/\/$/, "")}/invite/${token}`;
+  const link = marketingUrl(`/invite/${token}`);
   let emailed = false;
   const t = mailTransport();
   if (t) {
@@ -220,7 +242,7 @@ export async function acceptInvitation(
     prisma.invitation.update({ where: { id: inv.id }, data: { acceptedAt: new Date() } }),
   ]);
   await audit({ orgId: inv.orgId, userId, ip: client.ip, action: "team.invite_accepted", targetType: "invitation", targetId: inv.id });
-  const session = current ? null : await createSession({ userId, orgId: inv.orgId, ip: client.ip, userAgent: client.userAgent });
+  const session = current ? null : await sessionFor(userId, inv.orgId, client);
   return { orgId: inv.orgId, session };
 }
 

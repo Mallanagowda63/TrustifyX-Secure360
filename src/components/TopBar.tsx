@@ -49,9 +49,9 @@ export function TopBar({
         <span className="rounded border border-navy-600 px-1.5 py-0.5 text-[11px] text-ink-muted uppercase">{role}</span>
       </div>
       <div className="flex items-center gap-3 text-sm">
-        <span className="hidden text-ink-muted sm:inline" title={user.email}>
+        <a href="/settings" className="hidden text-ink-muted hover:text-ink sm:inline" title={`Profile · ${user.email}`}>
           {user.name}
-        </span>
+        </a>
         <button className="btn btn-ghost py-1" onClick={logout}>
           Sign out
         </button>

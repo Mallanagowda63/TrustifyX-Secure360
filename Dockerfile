@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1.7
-# Multi-stage build producing two images from one codebase:
-#   --target web     Next.js dashboard + REST API (standalone output)
-#   --target worker  BullMQ monitoring workers (also runs `prisma migrate deploy`)
+# Multi-stage build producing three images from one codebase:
+#   --target web      Next.js dashboard + REST API (standalone output)
+#   --target worker   BullMQ monitoring workers (also runs `prisma migrate deploy`)
+#   --target scanner  isolated OWASP ZAP scan worker (no database access)
 
 FROM node:22-alpine AS base
 RUN apk add --no-cache openssl libc6-compat
@@ -19,7 +20,8 @@ COPY . .
 ENV BUILD_STANDALONE=1
 RUN npx prisma generate \
  && npm run build \
- && npm run build:worker
+ && npm run build:worker \
+ && npm run build:scanner
 
 # ─── Web ───
 FROM base AS web
@@ -42,3 +44,20 @@ COPY --from=build --chown=node:node /app/scripts ./scripts
 COPY --from=build --chown=node:node /app/package.json ./package.json
 USER node
 CMD ["node", "dist-worker/index.js"]
+
+# ─── Scanner (OWASP ZAP + isolated scan runner) ───
+FROM node:22-bookworm-slim AS scanner-deps
+WORKDIR /deps
+COPY deploy/scanner/package.json ./package.json
+RUN npm install --omit=dev --no-audit --no-fund --ignore-scripts
+
+FROM ghcr.io/zaproxy/zaproxy:stable AS scanner
+USER root
+# Node.js runtime copied from the official image (single binary, glibc-based like the ZAP image).
+COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+WORKDIR /zap/scanner
+COPY --from=scanner-deps --chown=zap:zap /deps/node_modules ./node_modules
+COPY --from=build --chown=zap:zap /app/dist-scanner ./dist-scanner
+USER zap
+ENV NODE_ENV=production ZAP_COMMAND=zap.sh
+CMD ["node", "dist-scanner/index.js"]

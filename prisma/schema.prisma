@@ -30,18 +30,32 @@ model User {
   failedLogins    Int       @default(0)
   lockedUntil     DateTime?
   lastLoginAt     DateTime?
+  /// TOTP two-factor authentication. Secrets are AES-256-GCM encrypted (encryptSecret).
+  totpSecretEnc   String?
+  totpEnabledAt   DateTime?
+  /// Enrollment in progress: secret shown as QR code, not active until confirmed with a code.
+  totpPendingEnc  String?
+  totpPendingAt   DateTime?
+  /// Last accepted TOTP time step; codes at or before it are rejected (replay prevention).
+  totpLastStep    Int?
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
 
   memberships     Membership[]
+  recoveryCodes   MfaRecoveryCode[]
+  mfaChallenges   MfaChallenge[]
+  mfaResets       MfaResetRequest[]
   sessions        Session[]
   notificationPrefs NotificationPreference[]
+  passwordResets    PasswordResetToken[]
 }
 
 model Organization {
   id        String   @id @default(cuid())
   name      String
   slug      String   @unique
+  /// Owners and admins must use two-factor authentication to access this organization.
+  requireMfaForPrivileged Boolean @default(false)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -59,6 +73,18 @@ model Organization {
   payments       Payment[]
   invoices       Invoice[]
   notificationPrefs NotificationPreference[]
+  cloudflareConnection CloudflareConnection?
+  cloudflareZones      CloudflareZone[]
+  protectionConfigs    ProtectionConfiguration[]
+  protectionChanges    ProtectionChangeAudit[]
+  securityEvents       SecurityEvent[]
+  vulnerabilityScans   VulnerabilityScan[]
+  vulnerabilityFindings VulnerabilityFinding[]
+  scanSchedules        ScanSchedule[]
+  serverAgents         ServerAgent[]
+  serverEvents         ServerSecurityEvent[]
+  backupStatuses       BackupStatus[]
+  restoreTests         RestoreTest[]
 }
 
 model Membership {
@@ -82,6 +108,11 @@ model Session {
   csrfToken   String
   userId      String
   activeOrgId String?
+  /// Which website the session belongs to (MARKETING | PORTAL); cookies are host-only.
+  site        String   @default("MARKETING")
+  /// Sessions created through SSO share a group so logout on one site ends both.
+  ssoGroupId  String?
+  persistent  Boolean  @default(true)
   ip          String?
   userAgent   String?
   createdAt   DateTime @default(now())
@@ -92,6 +123,95 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([ssoGroupId])
+}
+
+/// One-time authorization code for moving a signed-in user between the marketing site and the
+/// portal. Only the hash is stored; codes live 60 seconds and can be redeemed once, on the
+/// target site only.
+model SsoCode {
+  id         String    @id @default(cuid())
+  codeHash   String    @unique
+  userId     String
+  orgId      String?
+  targetSite String
+  /// Hash of the OAuth-style state bound to a cookie on the target site (prevents login CSRF).
+  stateHash  String
+  nextPath   String
+  groupId    String
+  persistent Boolean   @default(false)
+  expiresAt  DateTime
+  usedAt     DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  tokenHash String    @unique
+  userId    String
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Single-use recovery codes for two-factor authentication (SHA-256 of user id + code).
+model MfaRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String    @unique
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Password verified, second factor pending. The raw token lives only in an HttpOnly cookie.
+model MfaChallenge {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  site       String
+  persistent Boolean  @default(true)
+  attempts   Int      @default(0)
+  ip         String?
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// Self-service removal of two-factor authentication when both the authenticator and the recovery
+/// codes are lost: password + email confirmation + a waiting period, with notifications and a
+/// cancel link. Nobody (including TrustifyX staff) can skip these steps.
+model MfaResetRequest {
+  id          String    @id @default(cuid())
+  userId      String
+  tokenHash   String    @unique
+  /// Email link must be confirmed before this time.
+  expiresAt   DateTime
+  confirmedAt DateTime?
+  /// Two-factor authentication is removed at the first sign-in after this time.
+  effectiveAt DateTime?
+  cancelledAt DateTime?
+  completedAt DateTime?
+  ip          String?
+  createdAt   DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 model Invitation {
@@ -195,6 +315,12 @@ model Website {
   configChanges   ConfigChange[]
   findings        Finding[]
   incidents       Incident[]
+  cloudflareZones CloudflareZone[]
+  vulnerabilityScans VulnerabilityScan[]
+  vulnerabilityFindings VulnerabilityFinding[]
+  scanSchedule    ScanSchedule?
+  backupStatus    BackupStatus?
+  restoreTests    RestoreTest[]
 
   @@unique([orgId, hostname])
   @@index([status])
@@ -493,6 +619,8 @@ enum InvoiceStatus {
 model PricingPlan {
   id                      String   @id @default(cuid())
   code                    String   @unique
+  /// BASE = Starter/Growth/Business (one per organization); ADDON = optional extra such as Secure360 Protect.
+  kind                    String   @default("BASE")
   name                    String
   tagline                 String
   description             String
@@ -657,4 +785,366 @@ model BillingAuditLog {
 model BillingCounter {
   key   String @id
   value Int    @default(0)
+}
+
+// ───────────────────────────── Website protection (Cloudflare) ─────────────────────────────
+
+/// A customer's own Cloudflare account, connected with a scoped API token (never a password or
+/// Global API Key). The token is AES-256-GCM encrypted and never returned by any API.
+model CloudflareConnection {
+  id             String    @id @default(cuid())
+  orgId          String    @unique
+  tokenEnc       String
+  /// Last 4 characters, to help customers recognise which token is connected.
+  tokenHint      String
+  cfTokenId      String?
+  /// ACTIVE | INVALID (verify failed, disabled or expired at Cloudflare)
+  status         String    @default("ACTIVE")
+  tokenExpiresAt DateTime?
+  /// Result of read probes per capability, e.g. { zone: true, dns: true, waf: false, ... }
+  permissions    Json?
+  lastVerifiedAt DateTime?
+  lastError      String?
+  createdById    String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  org   Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zones CloudflareZone[]
+}
+
+/// A Cloudflare zone linked to a verified Secure360 website (zone name = website hostname or a parent domain).
+model CloudflareZone {
+  id               String    @id @default(cuid())
+  orgId            String
+  connectionId     String
+  /// The verified website this zone protects (one zone per website; the zone may also cover other hostnames).
+  websiteId        String    @unique
+  cfZoneId         String
+  name             String
+  /// Cloudflare zone status: active | pending | initializing | moved | deleted | deactivated
+  status           String
+  /// Cloudflare plan legacy id: free | pro | business | enterprise (others kept verbatim)
+  planCode         String?
+  planName         String?
+  nameServers      Json?
+  paused           Boolean   @default(false)
+  /// Detected protection capabilities for this zone (plan, permissions and API availability).
+  capabilities     Json?
+  /// Last read Cloudflare configuration (settings, DNS proxy status, rulesets) - observed state only.
+  observed         Json?
+  lastSyncedAt     DateTime?
+  lastSyncError    String?
+  /// Security-event coverage reported by Cloudflare GraphQL settings (enabled, notOlderThan, ...).
+  eventCoverage    Json?
+  eventsSyncedUntil DateTime?
+  eventsError      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  org        Organization              @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection CloudflareConnection      @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  website    Website                   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  configs    ProtectionConfiguration[]
+  changes    ProtectionChangeAudit[]
+  events     SecurityEvent[]
+
+  @@unique([orgId, cfZoneId])
+  @@index([orgId])
+}
+
+/// A protection feature TrustifyX manages on a zone. Only rules/settings recorded here are ever
+/// changed or reverted by TrustifyX; customer-created Cloudflare rules are never modified.
+model ProtectionConfiguration {
+  id          String    @id @default(cuid())
+  orgId       String
+  zoneRefId   String
+  /// Feature key, e.g. always_use_https, min_tls_1_2, bot_fight_mode, managed_waf, rule:sensitive_files
+  feature     String
+  /// ACTIVE | PREVIEW (rule created but not enforcing) | DISABLED | FAILED
+  status      String
+  cfRulesetId String?
+  cfRuleId    String?
+  /// Value before TrustifyX changed it (used to revert settings).
+  previous    Json?
+  desired     Json?
+  observed    Json?
+  verifiedAt  DateTime?
+  lastError   String?
+  updatedById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  org  Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zone CloudflareZone @relation(fields: [zoneRefId], references: [id], onDelete: Cascade)
+
+  @@unique([zoneRefId, feature])
+  @@index([orgId])
+}
+
+/// Append-only record of every protection change attempt and its verified result.
+model ProtectionChangeAudit {
+  id        String   @id @default(cuid())
+  orgId     String
+  zoneRefId String?
+  feature   String
+  /// APPLY | PREVIEW | ENFORCE | REVERT | CONNECT | DISCONNECT | ZONE_LINK
+  action    String
+  before    Json?
+  after     Json?
+  /// SUCCEEDED | FAILED | VERIFY_FAILED
+  result    String
+  error     String?
+  userId    String?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  org  Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zone CloudflareZone? @relation(fields: [zoneRefId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+}
+
+/// Edge security event imported from Cloudflare (firewallEventsAdaptive). One row per event;
+/// counts are counts of events, not of unique attackers.
+model SecurityEvent {
+  id         String   @id @default(cuid())
+  orgId      String
+  zoneRefId  String
+  /// Stable de-duplication key (Ray ID when available, else a hash of the event fields).
+  eventKey   String
+  occurredAt DateTime
+  action     String
+  source     String?
+  ruleId     String?
+  country    String?
+  host       String?
+  path       String?
+  method     String?
+  userAgent  String?
+  clientIp   String?
+  rayId      String?
+  createdAt  DateTime @default(now())
+
+  org  Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zone CloudflareZone @relation(fields: [zoneRefId], references: [id], onDelete: Cascade)
+
+  @@unique([zoneRefId, eventKey])
+  @@index([orgId, occurredAt])
+  @@index([zoneRefId, occurredAt])
+}
+
+// ───────────────────────────── Vulnerability scanning (OWASP ZAP) ─────────────────────────────
+
+/// One authorized OWASP ZAP scan of a verified website. PASSIVE = spider + passive rules only
+/// (no attack payloads); ACTIVE = separately authorized, inside a maintenance window.
+model VulnerabilityScan {
+  id                   String    @id @default(cuid())
+  orgId                String
+  websiteId            String
+  /// PASSIVE | ACTIVE
+  type                 String
+  /// QUEUED | RUNNING | COMPLETED | FAILED | CANCELLED
+  status               String    @default("QUEUED")
+  /// Exact scope: only this origin is reachable through the scanner's scope proxy.
+  targetUrl            String
+  /// MANUAL | SCHEDULED
+  trigger              String    @default("MANUAL")
+  requestedById        String?
+  /// The authorization statement the user confirmed (stored verbatim) and when.
+  authorizationText    String
+  authorizedAt         DateTime
+  windowStart          DateTime?
+  windowEnd            DateTime?
+  progress             Int       @default(0)
+  message              String?
+  error                String?
+  startedAt            DateTime?
+  finishedAt           DateTime?
+  cancelRequestedAt    DateTime?
+  /// Requests allowed / refused by the scope proxy, ZAP exit code and versions.
+  stats                Json?
+  alertCount           Int       @default(0)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  org      Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website  Website                @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  findings VulnerabilityFinding[]
+
+  @@index([orgId, createdAt])
+  @@index([websiteId, createdAt])
+  @@index([status])
+}
+
+/// A ZAP alert from a scan (one row per alert type, with sample instances).
+model VulnerabilityFinding {
+  id            String   @id @default(cuid())
+  orgId         String
+  scanId        String
+  websiteId     String
+  pluginId      String
+  alertRef      String?
+  name          String
+  /// HIGH | MEDIUM | LOW | INFO (ZAP riskcode 3..0)
+  risk          String
+  /// HIGH | MEDIUM | LOW | CONFIRMED | FALSE_POSITIVE (ZAP confidence)
+  confidence    String
+  description   String
+  solution      String?
+  reference     String?
+  cweId         Int?
+  wascId        Int?
+  /// Up to 10 sample instances: uri, method, param, evidence (truncated). Never attack payload bodies.
+  instances     Json
+  instanceCount Int
+  createdAt     DateTime @default(now())
+
+  org     Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  scan    VulnerabilityScan @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  website Website           @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@unique([scanId, pluginId, alertRef])
+  @@index([orgId, risk])
+  @@index([websiteId, createdAt])
+}
+
+/// Recurring passive baseline scan for a verified website (active scans are never scheduled).
+model ScanSchedule {
+  id               String    @id @default(cuid())
+  orgId            String
+  websiteId        String    @unique
+  /// WEEKLY | MONTHLY
+  frequency        String
+  nextRunAt        DateTime
+  enabled          Boolean   @default(true)
+  authorizationText String
+  authorizedById   String
+  authorizedAt     DateTime
+  lastRunAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([enabled, nextRunAt])
+}
+
+// ───────────────────────────── Server security (Wazuh agents) ─────────────────────────────
+
+/// A customer server registered with the TrustifyX Wazuh manager. Agents are pre-registered via
+/// the Wazuh API and mapped to the organization by agent ID (never by a group the agent claims).
+model ServerAgent {
+  id                String    @id @default(cuid())
+  orgId             String
+  displayName       String
+  /// VPS | DEDICATED | CLOUD_VM | SHARED_HOSTING
+  environment       String
+  /// LINUX_DEB | LINUX_RPM | WINDOWS | MACOS
+  os                String
+  /// NOT_COMPATIBLE | PENDING_INSTALL | NEVER_CONNECTED | ACTIVE | DISCONNECTED | REMOVED
+  status            String
+  wazuhAgentId      String?
+  wazuhAgentName    String?
+  /// Enrollment key, encrypted, kept only until the agent first connects.
+  keyEnc            String?
+  agentVersion      String?
+  osName            String?
+  lastKeepAlive     DateTime?
+  /// First time the agent was seen connected (data flowing).
+  firstSeenAt       DateTime?
+  lastEventAt       DateTime?
+  eventsSyncedUntil DateTime?
+  lastSyncError     String?
+  createdById       String
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  org    Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  events ServerSecurityEvent[]
+
+  @@unique([wazuhAgentId])
+  @@index([orgId])
+}
+
+/// A Wazuh alert for one of the organization's agents. Log excerpts are untrusted and never sent to AI.
+model ServerSecurityEvent {
+  id          String   @id @default(cuid())
+  orgId       String
+  agentRefId  String
+  /// Wazuh alert id (unique per alert).
+  eventKey    String
+  occurredAt  DateTime
+  ruleId      String?
+  level       Int
+  /// CRITICAL | HIGH | MEDIUM | LOW | INFO (from the Wazuh rule level)
+  severity    String
+  /// FILE_INTEGRITY | MALWARE | ROOTKIT | AUTHENTICATION | SECURITY_LOG
+  category    String
+  description String
+  groups      Json
+  filePath    String?
+  fileEvent   String?
+  location    String?
+  logExcerpt  String?
+  createdAt   DateTime @default(now())
+
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent ServerAgent  @relation(fields: [agentRefId], references: [id], onDelete: Cascade)
+
+  @@unique([agentRefId, eventKey])
+  @@index([orgId, occurredAt])
+}
+
+// ───────────────────────────── Backup & recovery ─────────────────────────────
+
+/// Backup set-up for a website. Without a backup-provider integration every value is reported by
+/// the customer (source = CUSTOMER_REPORTED) and is shown as such; TrustifyX never claims to have verified it.
+model BackupStatus {
+  id               String    @id @default(cuid())
+  orgId            String
+  websiteId        String    @unique
+  /// HOSTING_PROVIDER | CONTROL_PANEL | PLUGIN | CUSTOM_SCRIPT | NONE | UNKNOWN
+  method           String
+  /// DAILY | WEEKLY | MONTHLY | NONE | UNKNOWN
+  frequency        String
+  /// SEPARATE_LOCATION | SAME_SERVER | UNKNOWN
+  storage          String
+  includesFiles    Boolean?
+  includesDatabase Boolean?
+  encrypted        Boolean?
+  retentionDays    Int?
+  lastBackupAt     DateTime?
+  /// CUSTOMER_REPORTED (no integration yet) | INTEGRATION_VERIFIED
+  source           String    @default("CUSTOMER_REPORTED")
+  notes            String?
+  updatedById      String
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+}
+
+/// A restore test the customer performed (history). TrustifyX never runs restores.
+model RestoreTest {
+  id              String   @id @default(cuid())
+  orgId           String
+  websiteId       String
+  testedAt        DateTime
+  /// SUCCESS | PARTIAL | FAILED
+  result          String
+  durationMinutes Int?
+  notes           String?
+  recordedById    String
+  createdAt       DateTime @default(now())
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  website Website      @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, testedAt])
+  @@index([websiteId, testedAt])
 }

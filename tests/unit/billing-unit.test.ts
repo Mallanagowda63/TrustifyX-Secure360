@@ -61,11 +61,13 @@ describe("server-side pricing", () => {
   });
 
   it("ships the published catalog: Starter ₹999, Growth ₹2,999, Business ₹7,999 with 1/5/20 websites", () => {
-    expect(DEFAULT_PLANS.map((p) => [p.code, p.monthlyPricePaise, p.maxWebsites])).toEqual([
+    expect(DEFAULT_PLANS.filter((p) => p.kind === "BASE").map((p) => [p.code, p.monthlyPricePaise, p.maxWebsites])).toEqual([
       ["STARTER", 99_900, 1],
       ["GROWTH", 299_900, 5],
       ["BUSINESS", 799_900, 20],
     ]);
+    // Optional add-on (proposed price), never a base plan.
+    expect(DEFAULT_PLANS.filter((p) => p.kind === "ADDON").map((p) => [p.code, p.monthlyPricePaise])).toEqual([["PROTECT", 499_900]]);
     expect(formatInr(299_900)).toBe("₹2,999");
     expect(formatInr(117_882)).toBe("₹1,178.82");
   });

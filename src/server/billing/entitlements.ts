@@ -60,7 +60,7 @@ export function accessUntil(sub: Subscription, graceDays = env().BILLING_GRACE_D
 
 export async function getEntitlement(orgId: string, now = new Date()): Promise<Entitlement> {
   const subs = await prisma.subscription.findMany({
-    where: { orgId, status: { in: ["ACTIVE", "PAST_DUE", "HALTED", "CANCELLED", "COMPLETED"] } },
+    where: { orgId, status: { in: ["ACTIVE", "PAST_DUE", "HALTED", "CANCELLED", "COMPLETED"] }, plan: { kind: "BASE" } },
     include: { plan: true },
     orderBy: { currentPeriodEnd: "desc" },
     take: 20,
@@ -125,4 +125,23 @@ export async function requireFeature(orgId: string, feature: Feature): Promise<E
     throw new ApiError(403, `${FEATURE_LABEL[feature]} are not included in your ${ent.plan?.name ?? "current"} plan. Upgrade under Billing.`, "plan_feature");
   }
   return ent;
+}
+
+/**
+ * Whether an add-on (e.g. Secure360 Protect) currently grants service. Uses the same verified
+ * subscription states and grace rules as base plans; an add-on only counts while a base plan is active.
+ */
+export async function addonEntitlement(orgId: string, code: string, now = new Date()): Promise<{ active: boolean; accessUntil: Date | null; baseActive: boolean }> {
+  const base = await getEntitlement(orgId, now);
+  const subs = await prisma.subscription.findMany({
+    where: { orgId, status: { in: ["ACTIVE", "PAST_DUE", "HALTED", "CANCELLED", "COMPLETED"] }, plan: { code, kind: "ADDON" } },
+    take: 20,
+  });
+  let until: Date | null = null;
+  for (const sub of subs) {
+    if (sub.currentPeriodStart && sub.currentPeriodStart > now) continue;
+    const u = accessUntil(sub);
+    if (u && u > now && (!until || u > until)) until = u;
+  }
+  return { active: base.active && until !== null, accessUntil: until, baseActive: base.active };
 }

@@ -47,9 +47,14 @@ export function MarketingNav({ loggedIn }: { loggedIn: boolean }) {
 
         <div className="hidden items-center gap-2 lg:flex">
           {loggedIn ? (
-            <Link href="/dashboard" className="mk-btn mk-btn-primary">
-              Go to dashboard
-            </Link>
+            <>
+              <Link href="/account" className="mk-btn mk-btn-ghost">
+                My Account
+              </Link>
+              <a href="/sso/open?target=portal&next=%2F" className="mk-btn mk-btn-primary">
+                Open Security Dashboard
+              </a>
+            </>
           ) : (
             <>
               <Link href="/login" className="mk-btn mk-btn-ghost">
@@ -86,9 +91,14 @@ export function MarketingNav({ loggedIn }: { loggedIn: boolean }) {
           </ul>
           <div className="mt-4 grid gap-2">
             {loggedIn ? (
-              <Link href="/dashboard" className="mk-btn mk-btn-primary w-full">
-                Go to dashboard
-              </Link>
+              <>
+                <Link href="/account" className="mk-btn mk-btn-ghost w-full">
+                  My Account
+                </Link>
+                <a href="/sso/open?target=portal&next=%2F" className="mk-btn mk-btn-primary w-full">
+                  Open Security Dashboard
+                </a>
+              </>
             ) : (
               <>
                 <Link href="/login" className="mk-btn mk-btn-ghost w-full">

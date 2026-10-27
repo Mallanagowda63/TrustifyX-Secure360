@@ -1,13 +1,11 @@
-import { ApiError, publicRoute } from "@/server/api";
+import { adminRoute } from "@/server/api";
 import { prisma } from "@/server/db";
 
 /**
  * TrustifyX operator view: tenant list with usage counts only. Platform admins do not
  * get access to customers' findings, checks or configuration through this endpoint.
  */
-export const GET = publicRoute(async ({ session }) => {
-  if (!session) throw new ApiError(401, "Authentication required", "unauthenticated");
-  if (!session.user.isPlatformAdmin) throw new ApiError(403, "Platform administrator access required", "forbidden");
+export const GET = adminRoute(async () => {
   const orgs = await prisma.organization.findMany({
     orderBy: { createdAt: "desc" },
     take: 500,

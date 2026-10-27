@@ -1,60 +1,77 @@
 import Link from "next/link";
+import { Inter, Plus_Jakarta_Sans } from "next/font/google";
 import { requirePageSession } from "@/server/auth/page";
 import { can } from "@/server/auth/rbac";
 import { prisma } from "@/server/db";
-import { getEntitlement } from "@/server/billing/entitlements";
+import { accessStatus } from "@/server/services/portal";
 import { listUserOrgs } from "@/server/services/auth";
-import { Sidebar } from "@/components/Sidebar";
+import { marketingUrl } from "@/server/sites";
+import { PortalSidebar } from "@/components/portal/PortalSidebar";
 import { TopBar } from "@/components/TopBar";
 
 export const dynamic = "force-dynamic";
+export const metadata = { title: "TrustifyX Secure360 · Security Portal", robots: { index: false, follow: false } };
+
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+const jakarta = Plus_Jakarta_Sans({ subsets: ["latin"], variable: "--font-jakarta", weight: ["600", "700", "800"], display: "swap" });
 
 const day = (d: Date | null) => (d ? d.toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" }) : "");
 
-export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const s = await requirePageSession();
-  const [orgs, ent, verified] = await Promise.all([
+/** The customer security portal shell (served on PORTAL_URL). */
+export default async function PortalLayout({ children }: { children: React.ReactNode }) {
+  const s = await requirePageSession(undefined, { mfaExempt: true });
+  const [orgs, access, verified] = await Promise.all([
     listUserOrgs(s.user.id),
-    getEntitlement(s.org.id),
+    accessStatus(s.org.id),
     prisma.website.count({ where: { orgId: s.org.id, verifiedAt: { not: null } } }),
   ]);
 
   let banner: { tone: string; text: React.ReactNode } | null = null;
-  if (!ent.active) {
+  if (access.state === "SUBSCRIPTION_REQUIRED") {
     banner = {
-      tone: "border-amber-400/40 bg-amber-400/10 text-amber-100",
+      tone: "border-red-500/30 bg-red-500/10 text-red-100",
       text: (
         <>
-          <b>No active subscription.</b> Monitoring is paused until a plan is active.{" "}
-          <Link className="font-semibold underline" href="/billing">View plans</Link>
+          <b>Subscription Required.</b> Websites cannot be connected or monitored without an active plan.{" "}
+          <a className="font-semibold underline" href={marketingUrl("/#pricing")}>View Pricing Plans</a>
         </>
       ),
     };
-  } else if (ent.state === "GRACE") {
+  } else if (access.state === "PAYMENT_PENDING") {
     banner = {
-      tone: "border-amber-400/40 bg-amber-400/10 text-amber-100",
+      tone: "border-sky-400/30 bg-sky-500/10 text-sky-100",
       text: (
         <>
-          <b>Payment overdue.</b> Monitoring continues until {day(ent.accessUntil)}.{" "}
-          <Link className="font-semibold underline" href="/billing">Resolve in Billing</Link>
+          <b>Payment Confirmation Pending.</b> Your plan activates as soon as Razorpay confirms the payment.{" "}
+          <Link className="font-semibold underline" href="/billing">Billing Status</Link>
+        </>
+      ),
+    };
+  } else if (access.state === "GRACE") {
+    banner = {
+      tone: "border-amber-400/30 bg-amber-400/10 text-amber-100",
+      text: (
+        <>
+          <b>Payment overdue.</b> Monitoring continues until {day(access.accessUntil)}.{" "}
+          <a className="font-semibold underline" href="/sso/open?target=marketing&next=%2Faccount%2Fbilling">Update payment</a>
         </>
       ),
     };
   } else if (verified === 0) {
     banner = {
-      tone: "border-sky-400/40 bg-sky-500/10 text-sky-100",
+      tone: "border-teal-400/30 bg-teal-500/10 text-teal-100",
       text: (
         <>
-          <b>Subscription Active · Website Verification Required.</b> Add your website and verify ownership to start monitoring.{" "}
-          <Link className="font-semibold underline" href="/websites">Connect website</Link>
+          <b>Subscription Active · Website Verification Required.</b> Connect and verify your website to start monitoring.{" "}
+          <Link className="font-semibold underline" href="/check">Check Your Website Security</Link>
         </>
       ),
     };
   }
 
   return (
-    <div className="flex min-h-screen">
-      <Sidebar canAudit={can(s.role, "audit.read")} isPlatformAdmin={s.user.isPlatformAdmin} />
+    <div className={`${inter.variable} ${jakarta.variable} portal-font flex min-h-screen bg-[#050b1a]`}>
+      <PortalSidebar canAudit={can(s.role, "audit.read")} isPlatformAdmin={s.user.isPlatformAdmin} />
       <div className="flex min-w-0 flex-1 flex-col">
         <TopBar user={{ name: s.user.name, email: s.user.email }} org={s.org} role={s.role} orgs={orgs} />
         {banner && (

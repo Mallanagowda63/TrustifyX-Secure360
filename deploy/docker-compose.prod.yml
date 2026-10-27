@@ -4,7 +4,14 @@ services:
     ports: !reset []
   redis:
     ports: !reset []
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
+    # The scanner gets its own Redis user that can only touch the scan queue and cancel flags.
+    command:
+      [
+        "redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction",
+        "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}",
+        "--user", "scanner", "on", ">${SCANNER_REDIS_PASSWORD:?set SCANNER_REDIS_PASSWORD}",
+        "~bull:vuln-scans:*", "~scan:cancel:*", "&*", "+@all", "-@admin", "-flushall", "-flushdb", "-keys",
+      ]
     healthcheck:
       test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" --no-auth-warning ping"]
     environment:
@@ -18,9 +25,15 @@ services:
     environment:
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
       NODE_ENV: production
+  scanner:
+    environment:
+      REDIS_URL: redis://scanner:${SCANNER_REDIS_PASSWORD}@redis:6379
+      NODE_ENV: production
 
 networks:
   # No gateway: database and Redis are unreachable from outside, and containers can
   # only reach the internet through the firewalled `egress` bridge.
   internal:
+    internal: true
+  scanq:
     internal: true

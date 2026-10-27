@@ -2,6 +2,28 @@
 
 Target: Ubuntu 22.04/24.04 LTS, 2 vCPU / 4 GB RAM minimum (comfortably monitors several hundred websites at 5-minute intervals). The stack runs in Docker Compose behind nginx on the host.
 
+One deployment serves **two websites** from the same containers (see `docs/PORTAL.md`):
+
+| Website | Example domain | Variable |
+|---|---|---|
+| Marketing, pricing, signup, checkout, account/billing | `secure360.trustifyx.in` | `APP_URL` |
+| Customer security portal (login-only) | `portal.trustifyx.in` | `PORTAL_URL` |
+
+Nothing in this guide is run automatically. Deploying to the live servers is a manual, approved step.
+
+## 0. DNS
+
+Create these records at the DNS provider for `trustifyx.in`, pointing at the VPS:
+
+| Type | Name | Value | TTL |
+|---|---|---|---|
+| A | `secure360` | `<VPS IPv4>` | 300 |
+| A | `portal` | `<VPS IPv4>` | 300 |
+| AAAA | `secure360`, `portal` | `<VPS IPv6>` (only if the server has IPv6) | 300 |
+| CAA | `@` (or each name) | `0 issue "letsencrypt.org"` | 3600 |
+
+Check with `dig +short secure360.trustifyx.in portal.trustifyx.in` before requesting certificates. Optionally add a TrustifyX SPF/DKIM/DMARC configuration for the domain used in `MAIL_FROM`, so password-reset and alert emails are delivered.
+
 ## 1. Prepare the server
 
 ```bash
@@ -36,7 +58,9 @@ Edit `.env`. Production values:
 | Variable | Value |
 |---|---|
 | `NODE_ENV` | `production` |
-| `APP_URL` | `https://app.yourdomain.com` (HTTPS enables `__Host-` secure cookies) |
+| `APP_URL` | `https://secure360.trustifyx.in`: the marketing website (HTTPS enables `__Host-` secure cookies) |
+| `PORTAL_URL` | `https://portal.trustifyx.in`: the customer portal. It must be a different hostname with the same scheme, or the app refuses to start |
+| `SESSION_TTL_HOURS`, `SESSION_SHORT_TTL_HOURS` | session lifetime with / without "Keep me signed in" (defaults 168 / 12) |
 | `POSTGRES_PASSWORD` | long random value: `openssl rand -base64 32` |
 | `REDIS_PASSWORD` | long random value (used by `deploy/docker-compose.prod.yml`) |
 | `ENCRYPTION_KEY` | `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` (back it up: losing it makes stored integration credentials unreadable) |
@@ -80,26 +104,47 @@ docker compose exec worker node -e "fetch('http://169.254.169.254/').then(()=>co
 
 ## 5. nginx and TLS
 
+`deploy/nginx/secure360.conf` has one HTTP→HTTPS block and one HTTPS server block per website. Both proxy to the same app on `127.0.0.1:3000` and **must preserve the `Host` header**, because the app selects the website from it. The portal block adds `X-Robots-Tag: noindex` and refuses `/api/webhooks/*`.
+
 ```bash
-sudo cp deploy/nginx/secure360-proxy.conf /etc/nginx/snippets/
+sudo cp deploy/nginx/secure360-proxy.conf deploy/nginx/secure360-tls.conf /etc/nginx/snippets/
 sudo cp deploy/nginx/secure360.conf /etc/nginx/sites-available/
-sudo sed -i 's/app.example.com/app.yourdomain.com/g' /etc/nginx/sites-available/secure360.conf
-sudo ln -s /etc/nginx/sites-available/secure360.conf /etc/nginx/sites-enabled/
+sudo sed -i 's/secure360.example.com/secure360.trustifyx.in/g; s/portal.example.com/portal.trustifyx.in/g' /etc/nginx/sites-available/secure360.conf
 sudo rm -f /etc/nginx/sites-enabled/default
-# First issue the certificate (certbot temporarily edits the config):
-sudo certbot certonly --nginx -d app.yourdomain.com
+
+# One certificate covering both names (issue it before enabling the HTTPS blocks):
+sudo mkdir -p /var/www/certbot
+sudo certbot certonly --webroot -w /var/www/certbot -d secure360.trustifyx.in -d portal.trustifyx.in
+#   (if port 80 is not served yet: sudo certbot certonly --standalone -d ... with nginx stopped)
+
+sudo ln -s /etc/nginx/sites-available/secure360.conf /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl reload nginx
+curl -sI https://secure360.trustifyx.in/ | head -1
+curl -sI https://portal.trustifyx.in/login | head -1
 ```
 
-Certbot installs a renewal timer automatically (`systemctl list-timers | grep certbot`).
+Certbot installs a renewal timer automatically (`systemctl list-timers | grep certbot`). Add a deploy hook so nginx picks up renewed certificates: `echo 'systemctl reload nginx' | sudo tee /etc/letsencrypt/renewal-hooks/deploy/nginx.sh && sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/nginx.sh`.
+
+### Authentication callbacks (SSO)
+
+No external identity provider is involved, so nothing has to be registered anywhere. The SSO endpoints are served on **both** hosts and only redirect between the two configured URLs:
+
+| Endpoint | Host | Purpose |
+|---|---|---|
+| `/sso/begin` | target site | sets the `state` cookie, redirects to the other site's `/sso/authorize` |
+| `/sso/authorize` | source site (has the session) | issues a 60-second single-use code, redirects to `/sso/callback` |
+| `/sso/callback` | target site | checks state, redeems the code, creates a new session |
+| `/sso/open?target=portal\|marketing&next=/path` | either | used by the "Open Security Dashboard" and "Manage subscription" buttons |
+
+Requirements: `APP_URL`/`PORTAL_URL` exactly match the public URLs (scheme and host, no trailing path); nginx passes `Host`; HTTPS on both names. Password-reset emails link to `PORTAL_URL/reset-password`.
 
 ## 6. Razorpay webhook
 
-In the Razorpay dashboard, add a webhook to `https://app.yourdomain.com/api/webhooks/razorpay` with the events listed in `docs/BILLING.md`, and put its secret in `RAZORPAY_WEBHOOK_SECRET`. The worker reconciles billing every 10 minutes, so short outages of the webhook are recovered automatically.
+In the Razorpay dashboard, add a webhook to `https://secure360.trustifyx.in/api/webhooks/razorpay` (the **marketing** domain; the portal refuses webhook paths) with the events listed in `docs/BILLING.md`, and put its secret in `RAZORPAY_WEBHOOK_SECRET`. The worker reconciles billing every 10 minutes, so short outages of the webhook are recovered automatically.
 
 ## 7. First administrator
 
-1. Open `https://app.yourdomain.com/signup` and create the TrustifyX account.
+1. Open `https://secure360.trustifyx.in/signup` and create the TrustifyX account.
 2. Grant platform-operator access (tenant overview at `GET /api/admin/organizations`, counts only):
    ```bash
    docker compose exec worker npx tsx scripts/promote-admin.ts you@trustifyx.com
@@ -111,7 +156,11 @@ In the Razorpay dashboard, add a webhook to `https://app.yourdomain.com/api/webh
    ```
    Take a `pg_dump` before upgrading (see Backups).
 
-## 8. Operations
+## 8. Verify the deployment
+
+Run through `docs/PRODUCTION_CHECKLIST.md` → "Two-website verification" before announcing the portal. Use Razorpay **test** keys first. A test-mode payment proves the integration, not live payments.
+
+## 9. Operations
 
 **Logs:** `docker compose logs -f web worker`. The worker logs scheduling and failed jobs.
 
@@ -141,7 +190,7 @@ sudo ./deploy/egress-firewall.sh apply
 
 **Scaling:** increase `MONITOR_CONCURRENCY` (availability) and `MONITOR_CONFIG_CONCURRENCY`, or run more worker replicas (`docker compose ... up -d --scale worker=2`). Jobs are deduplicated per website, so replicas never double-check a site.
 
-**Health monitoring:** point an external uptime monitor at `https://app.yourdomain.com/api/health`.
+**Health monitoring:** point an external uptime monitor at `https://secure360.trustifyx.in/api/health` and `https://portal.trustifyx.in/login`.
 
 ## Data retention
 

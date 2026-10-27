@@ -103,16 +103,21 @@ export function consumeLastFailure() {
 }
 
 /** After payment, waits for the server to confirm activation (webhook or provider sync). */
-export async function waitForActivation(timeoutMs = 60_000): Promise<boolean> {
+export async function waitForActivation(timeoutMs = 60_000, addonCode?: string): Promise<boolean> {
   const start = Date.now();
   let i = 0;
   while (Date.now() - start < timeoutMs) {
-    const o = await api<{ entitlement: { active: boolean; state: string }; pending: { scheduledStartAt: string | null } | null }>(
+    const o = await api<{ entitlement: { active: boolean; state: string }; pending: { scheduledStartAt: string | null } | null; addons?: Array<{ code: string; active: boolean }> }>(
       i % 3 === 2 ? "/api/billing/sync" : "/api/billing/overview",
       i % 3 === 2 ? { method: "POST" } : {},
     ).catch(() => null);
-    // Done when active with no outstanding checkout; a scheduled downgrade stays pending until period end.
-    if (o?.entitlement.active && (!o.pending || o.pending.scheduledStartAt)) return true;
+    // Add-on checkout: done when that add-on is active (confirmed by the server, never by the browser).
+    if (addonCode) {
+      if (o?.addons?.some((a) => a.code === addonCode && a.active) && !o.pending) return true;
+    } else if (o?.entitlement.active && (!o.pending || o.pending.scheduledStartAt)) {
+      // Done when active with no outstanding checkout; a scheduled downgrade stays pending until period end.
+      return true;
+    }
     i++;
     await new Promise((r) => setTimeout(r, 3000));
   }

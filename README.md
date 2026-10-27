@@ -38,9 +38,13 @@ One TypeScript codebase, two processes:
 
 | Path | Purpose |
 |---|---|
-| `src/app/(marketing)` | Public homepage, pricing, legal/policy pages (light theme) |
-| `src/app/(checkout)` | Checkout page (Razorpay Checkout) |
-| `src/app/(auth)`, `src/app/(app)` | Auth pages and the customer dashboard (incl. `/billing`, platform `/admin`) |
+| `src/proxy.ts`, `src/lib/site-routing.ts` | Host-based routing between the two websites (marketing `APP_URL`, portal `PORTAL_URL`) |
+| `src/app/(marketing)` | Website 1: public homepage, pricing, legal/policy pages (light theme) |
+| `src/app/(checkout)`, `src/app/(account)` | Website 1: checkout (Razorpay), subscription confirmation and billing management |
+| `src/app/(auth)` | Website 1: signup / login / invitations |
+| `src/app/(portal-auth)` | Website 2: portal login, forgot / reset password |
+| `src/app/(app)` | Website 2: the customer security portal (dashboard, Check Website Security, findings, AI, alerts, reports, Billing Status, settings, platform `/admin`) |
+| `src/app/sso` | Single sign-on between the websites (short-lived single-use codes) |
 | `src/server/billing/` | Plans, Razorpay gateway, signatures, webhooks, entitlements, monitoring gate, reconciliation, invoices, admin |
 | `src/app/api/**/route.ts` | REST API (zod validation, CSRF, RBAC, tenant scoping via `src/server/api.ts`) |
 | `src/server/security/` | SSRF-safe fetch (`safe-fetch.ts`), IP/URL validation, AES-GCM secrets, rate limiting |
@@ -72,11 +76,18 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 npm install
 docker compose up -d postgres redis
 npx prisma migrate deploy
-npm run dev            # http://localhost:3000
+npm run dev            # both websites on port 3000
 npm run dev:worker     # in a second terminal
 ```
 
-Open http://localhost:3000, pick a plan and sign up, or go straight to `/signup`. Payments need Razorpay **test** keys (see [docs/BILLING.md](docs/BILLING.md)). Without them, checkout shows "Online payments are not configured"; for local testing you can grant access with `npm run billing:grant -- you@example.com GROWTH 30 "local testing"`. Then follow [docs/FIRST_WEBSITE.md](docs/FIRST_WEBSITE.md).
+| Website | Local URL |
+|---|---|
+| Marketing, pricing, signup, checkout, account | http://localhost:3000 |
+| Customer security portal | http://portal.localhost:3000 |
+
+Browsers resolve `*.localhost` to your machine without any hosts-file change. Sign in once on either site; **Open Security Dashboard** carries you across by SSO. See [docs/PORTAL.md](docs/PORTAL.md) for the manual test script.
+
+Open http://localhost:3000, pick a plan and sign up, or go straight to `/signup`. Payments need Razorpay **test** keys (see [docs/BILLING.md](docs/BILLING.md)). Without them, checkout shows "Online payments are not configured"; for local testing you can grant access with `npm run billing:grant -- you@example.com GROWTH 30 "local testing"`. Then open the portal and follow [docs/FIRST_WEBSITE.md](docs/FIRST_WEBSITE.md).
 
 Emails: without `SMTP_HOST`, alerts are recorded in the Alert log with status **Skipped** and not sent. For local testing you can point SMTP at a tool such as Mailpit.
 
@@ -99,7 +110,7 @@ AI: set `AI_PROVIDER=anthropic` and `AI_API_KEY` (default model `claude-opus-5-5
 
 ## Testing
 
-`npm test` runs 200+ tests:
+`npm test` runs about 250 tests:
 
 - **SSRF**: private, loopback, link-local, metadata, CGNAT, IPv4-mapped and NAT64/6to4-embedded addresses; DNS answers pointing inside; mixed answer sets; DNS rebinding (connection pinned to the vetted IP); redirect hops to metadata/private/other ports/schemes; hop limits; timeouts; body caps.
 - **Domain verification**: TXT record matching (split strings, wrong/partial tokens), verification file (200/404/wrong content), cross-host redirect refusal, authorization confirmation, re-verification failure handling.
@@ -107,16 +118,18 @@ AI: set `AI_PROVIDER=anthropic` and `AI_API_KEY` (default model `claude-opus-5-5
 - **Alerts**: downtime confirmation threshold, single alert per incident, recovery notice, transient blips ignored, per-recipient dedupe under concurrency, preferences, SKIPPED when SMTP is off, TLS-threshold alerts once per certificate.
 - **Findings**: rules never describe hardening gaps as attacks, lifecycle (open → resolved → reopened, false positive respected, no auto-resolve when a check failed).
 - **AI & reports**: redaction, CVE output guard, cross-tenant prompt isolation, report numbers, PDF rendering, scheduled report idempotency.
+- **Two websites / SSO**: host routing, host-bound sessions, the SSO code flow (replay, login CSRF, expiry, open redirect), linked logout, remember-me, password reset, subscription access states, portal dashboard data, cross-organization access.
 - **Billing**: Razorpay signature formats, server-side GST pricing, forged/duplicate/out-of-order webhooks, missed-webhook reconciliation, success/failure/renewal/grace/expiry/refund/cancellation, upgrade/downgrade, prepaid idempotency, plan limits, feature gating, monitoring gate, admin controls, and a full journey through the route handlers.
 
 Integration tests use `TEST_DATABASE_URL` (the compose Postgres creates `secure360_test` automatically) and are skipped when it is unset.
 
 ## Deployment
 
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (Ubuntu VPS, Docker Compose, nginx, TLS, egress firewall, backups).
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) (DNS for both domains, Ubuntu VPS, Docker Compose, nginx, TLS, SSO, Razorpay webhook, egress firewall, backups).
 
 ## Further documentation
 
+- [docs/PORTAL.md](docs/PORTAL.md): the two websites, unified login / SSO, local testing
 - [docs/FIRST_WEBSITE.md](docs/FIRST_WEBSITE.md): connecting the first real website
 - [docs/BILLING.md](docs/BILLING.md): Razorpay configuration, webhooks, billing test guide, go-live
 - [docs/ONBOARDING.md](docs/ONBOARDING.md): customer journey and support playbook

@@ -19,8 +19,9 @@ function SectionHeading({ eyebrow, title, text }: { eyebrow: string; title: stri
 }
 
 export default async function HomePage() {
-  const [session, plans] = await Promise.all([getPageSession(), listPlans()]);
+  const [session, plans, addons] = await Promise.all([getPageSession(), listPlans(), listPlans(false, "ADDON")]);
   const publicPlans = plans.map(presentPlan);
+  const publicAddons = addons.map(presentPlan);
   const loggedIn = Boolean(session);
   const base = env().APP_URL.replace(/\/$/, "");
 
@@ -195,6 +196,26 @@ export default async function HomePage() {
           <div className="mt-14">
             <Pricing plans={publicPlans} annualEnabled={annualEnabled()} loggedIn={loggedIn} />
           </div>
+          {publicAddons.map((a) => (
+            <div key={a.code} className="mx-auto mt-10 flex max-w-4xl flex-col gap-4 rounded-2xl border border-slate-200 bg-white p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-xs font-semibold tracking-wider text-royal-600 uppercase">Optional add-on</p>
+                <h3 className="mt-1 text-lg font-semibold text-slate-900">{a.name}</h3>
+                <p className="mt-1 max-w-xl text-sm text-slate-600">
+                  {a.description} Uses your own Cloudflare account; any Cloudflare plan charges are billed by Cloudflare. Requires an active plan.
+                </p>
+              </div>
+              <div className="shrink-0 text-left sm:text-right">
+                <p className="text-2xl font-bold text-slate-900">
+                  ₹{(a.monthly.subtotalPaise / 100).toLocaleString("en-IN")}
+                  <span className="text-sm font-normal text-slate-500">/mo + GST</span>
+                </p>
+                <a href={loggedIn ? `/checkout?addon=${a.code}&cycle=MONTHLY` : "/signup"} className="mt-2 inline-block text-sm font-semibold text-royal-600 hover:underline">
+                  {loggedIn ? "Add to your plan →" : "Start with a plan →"}
+                </a>
+              </div>
+            </div>
+          ))}
         </div>
       </section>
 

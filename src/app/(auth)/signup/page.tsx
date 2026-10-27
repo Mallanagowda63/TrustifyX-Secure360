@@ -43,7 +43,7 @@ function SignupForm() {
       await api("/api/auth/signup", {
         body: { name: fd.get("name"), email: fd.get("email"), orgName: fd.get("orgName"), password: fd.get("password") },
       });
-      router.replace(chosen ? `/checkout?${chosen}` : "/billing?welcome=1");
+      window.location.assign(chosen ? `/checkout?${chosen}` : "/account?welcome=1");
       router.refresh();
     } catch (err) {
       setError((err as Error).message);
